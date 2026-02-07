@@ -370,6 +370,21 @@ app.post("/make-server-c63c7d45/find-matches", async (c) => {
     const allRequests = allRequestsData || [];
     const now = Date.now();
     const oneDayMs = 24 * 60 * 60 * 1000;
+
+    const hasOwnPending = allRequests.some((request: any) => {
+      if (request.userId !== userId) return false;
+      if (request.status !== "pending") return false;
+      if (!request.createdAt) return false;
+      const createdAtTime = new Date(request.createdAt).getTime();
+      if (createdAtTime < now - oneDayMs) return false;
+      const requestTime = new Date(request.departureTime).getTime();
+      if (requestTime < now - 15 * 60 * 1000) return false;
+      return true;
+    });
+
+    if (!hasOwnPending) {
+      return c.json({ success: true, matches: [] });
+    }
     
     // Filter matches based on criteria
     const filtered = allRequests.filter((request: any) => {

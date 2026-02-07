@@ -60,7 +60,7 @@ export default function App() {
 
   const API_URL = `https://${projectId}.supabase.co/functions/v1/make-server-c63c7d45`;
 
-  const loadRideRequests = async (currentUserId: string) => {
+  const loadRideRequests = async (currentUserId: string, airportFilter?: string) => {
     try {
       const response = await fetch(`${API_URL}/ride-requests`, {
         headers: {
@@ -75,21 +75,59 @@ export default function App() {
         return;
       }
 
-      const allRequests = (data.requests || []).filter((request: any) => request.userId);
+      const allRequests = (data.requests || [])
+        .filter((request: any) => request.userId)
+        .filter((request: any) => {
+          if (!airportFilter) return false;
+          return request.airport === airportFilter;
+        });
+
+      let latestOutgoing: any = null;
+      for (const request of allRequests) {
+        if (request.userId !== currentUserId) continue;
+        if (request.status && request.status !== "pending") continue;
+        if (!latestOutgoing) {
+          latestOutgoing = request;
+          continue;
+        }
+        const existingTime = new Date(latestOutgoing.createdAt ?? latestOutgoing.departureTime).getTime();
+        const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
+        if (requestTime > existingTime) {
+          latestOutgoing = request;
+        }
+      }
+
+      const hasOwnPending = !!latestOutgoing;
+
+      const outgoing = hasOwnPending
+        ? [{
+            id: latestOutgoing.id,
+            recipientId: "public",
+            recipientName: "Public request",
+            recipientInitials: "PR",
+            destination: latestOutgoing.airport,
+            departureTime: latestOutgoing.departureTime,
+            status: latestOutgoing.status ?? "pending",
+            acceptedByName: latestOutgoing.acceptedByName,
+            timestamp: new Date(latestOutgoing.createdAt ?? Date.now()),
+          }]
+        : [];
 
       const incomingMap = new Map<string, any>();
+      if (hasOwnPending) {
       for (const request of allRequests) {
         if (request.userId === currentUserId) continue;
         if (request.status && request.status !== "pending") continue;
         const existing = incomingMap.get(request.userId);
         if (!existing) {
-          incomingMap.set(request.userId, request);
-          continue;
-        }
-        const existingTime = new Date(existing.createdAt ?? existing.departureTime).getTime();
-        const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
-        if (requestTime > existingTime) {
-          incomingMap.set(request.userId, request);
+            incomingMap.set(request.userId, request);
+            continue;
+          }
+          const existingTime = new Date(existing.createdAt ?? existing.departureTime).getTime();
+          const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
+          if (requestTime > existingTime) {
+            incomingMap.set(request.userId, request);
+          }
         }
       }
 
@@ -108,34 +146,6 @@ export default function App() {
         status: request.status ?? "pending",
         timestamp: new Date(request.createdAt ?? Date.now()),
       }));
-
-      let latestOutgoing: any = null;
-      for (const request of allRequests) {
-        if (request.userId !== currentUserId) continue;
-        if (!latestOutgoing) {
-          latestOutgoing = request;
-          continue;
-        }
-        const existingTime = new Date(latestOutgoing.createdAt ?? latestOutgoing.departureTime).getTime();
-        const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
-        if (requestTime > existingTime) {
-          latestOutgoing = request;
-        }
-      }
-
-      const outgoing = latestOutgoing
-        ? [{
-            id: latestOutgoing.id,
-            recipientId: "public",
-            recipientName: "Public request",
-            recipientInitials: "PR",
-            destination: latestOutgoing.airport,
-            departureTime: latestOutgoing.departureTime,
-            status: latestOutgoing.status ?? "pending",
-            acceptedByName: latestOutgoing.acceptedByName,
-            timestamp: new Date(latestOutgoing.createdAt ?? Date.now()),
-          }]
-        : [];
 
       setRideRequests(requests);
       setOutgoingRequests(outgoing);
@@ -167,7 +177,7 @@ export default function App() {
           if (data.success && data.profile) {
             setUserProfile(data.profile);
             await loadChats(data.profile.id);
-            await loadRideRequests(data.profile.id);
+            await loadRideRequests(data.profile.id, selectedAirport);
             
             setCurrentScreen("chatList");
           } else {
@@ -408,7 +418,7 @@ export default function App() {
         
         // Always navigate to chatList after successful profile creation
         console.log("Navigating to chatList");
-        await loadRideRequests(profile.id);
+        await loadRideRequests(profile.id, selectedAirport);
         setCurrentScreen("chatList");
       } else {
         throw new Error(result.error || "Failed to create profile");
@@ -488,7 +498,7 @@ export default function App() {
         const profile = await ensureProfile(authData.user.id, email);
         setUserProfile(profile);
         await loadChats(profile.id);
-        await loadRideRequests(profile.id);
+        await loadRideRequests(profile.id, selectedAirport);
         setCurrentScreen("chatList");
       }
     } catch (error) {
@@ -607,7 +617,7 @@ export default function App() {
     setSelectedMatch(null);
     if (userProfile) {
       loadChats(userProfile.id);
-      loadRideRequests(userProfile.id);
+      loadRideRequests(userProfile.id, selectedAirport);
     }
   };
 
@@ -615,11 +625,9 @@ export default function App() {
     setCurrentScreen("chatList");
     setSelectedChat(null);
     setSelectedMatch(null);
-    setSelectedAirport("");
-    setUserPreferences(null);
     if (userProfile) {
       loadChats(userProfile.id);
-      loadRideRequests(userProfile.id);
+      loadRideRequests(userProfile.id, selectedAirport);
     }
   };
 
@@ -682,7 +690,7 @@ export default function App() {
 
   const handleShowInbox = () => {
     if (!userProfile) return;
-    loadRideRequests(userProfile.id);
+    loadRideRequests(userProfile.id, selectedAirport);
     setCurrentScreen("inbox");
   };
 
