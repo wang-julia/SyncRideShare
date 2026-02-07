@@ -4,6 +4,8 @@ import { logger } from "npm:hono/logger";
 import * as kv from "./kv_store.tsx";
 
 const app = new Hono();
+const FLOWGLAD_API_BASE = "https://app.flowglad.com/api/v1";
+const FLOWGLAD_PRICE_SLUG = Deno.env.get("FLOWGLAD_RIDE_SPLIT_PRICE_SLUG") ?? "";
 
 // Enable logger
 app.use('*', logger(console.log));
@@ -58,6 +60,13 @@ app.post("/make-server-c63c7d45/chat", async (c) => {
     const chat = await c.req.json();
     const chatId = `chat_${chat.id}`;
     await kv.set(chatId, chat);
+    if (Array.isArray(chat.participants)) {
+      await Promise.all(
+        chat.participants.map((participantId: string) =>
+          kv.set(`chat_${participantId}_${chat.id}`, chat),
+        ),
+      );
+    }
     return c.json({ success: true, chat });
   } catch (error) {
     console.log("Error creating chat:", error);
@@ -103,6 +112,13 @@ app.put("/make-server-c63c7d45/chat/:id", async (c) => {
     }
     const updatedChat = { ...existingChat, ...updates };
     await kv.set(chatId, updatedChat);
+    if (Array.isArray(updatedChat.participants)) {
+      await Promise.all(
+        updatedChat.participants.map((participantId: string) =>
+          kv.set(`chat_${participantId}_${id}`, updatedChat),
+        ),
+      );
+    }
     return c.json({ success: true, chat: updatedChat });
   } catch (error) {
     console.log("Error updating chat:", error);
@@ -123,7 +139,16 @@ app.delete("/make-server-c63c7d45/chat/:id", async (c) => {
     }
     
     // Delete the chat itself
+    const existingChat = await kv.get(chatId);
     await kv.del(chatId);
+    if (existingChat && Array.isArray(existingChat.participants)) {
+      const participantKeys = existingChat.participants.map((participantId: string) =>
+        `chat_${participantId}_${id}`,
+      );
+      if (participantKeys.length > 0) {
+        await kv.mdel(participantKeys);
+      }
+    }
     
     return c.json({ success: true });
   } catch (error) {
@@ -146,6 +171,13 @@ app.post("/make-server-c63c7d45/message", async (c) => {
       chat.lastMessage = message.message;
       chat.lastMessageTime = message.timestamp;
       await kv.set(chatId, chat);
+      if (Array.isArray(chat.participants)) {
+        await Promise.all(
+          chat.participants.map((participantId: string) =>
+            kv.set(`chat_${participantId}_${message.chatId}`, chat),
+          ),
+        );
+      }
     }
     
     return c.json({ success: true, message });
@@ -167,16 +199,125 @@ app.get("/make-server-c63c7d45/messages/:chatId", async (c) => {
   }
 });
 
+// Flowglad checkout session endpoints
+app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
+  try {
+    const flowgladKey = Deno.env.get("FLOWGLAD_SECRET_KEY");
+    if (!flowgladKey) {
+      return c.json({ success: false, error: "Flowglad secret key not configured" }, 500);
+    }
+
+    const {
+      customerExternalId,
+      quantity,
+      successUrl,
+      cancelUrl,
+      outputMetadata,
+      outputName,
+      priceSlug,
+    } = await c.req.json();
+
+    if (!customerExternalId || !successUrl || !cancelUrl || !quantity || quantity <= 0) {
+      return c.json({ success: false, error: "Missing required checkout session fields" }, 400);
+    }
+
+    const effectivePriceSlug = priceSlug || FLOWGLAD_PRICE_SLUG;
+    if (!effectivePriceSlug) {
+      return c.json({ success: false, error: "Flowglad price slug not configured" }, 500);
+    }
+
+    const response = await fetch(`${FLOWGLAD_API_BASE}/checkout-sessions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${flowgladKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        checkoutSession: {
+          customerExternalId,
+          successUrl,
+          cancelUrl,
+          type: "product",
+          outputMetadata: outputMetadata ?? {},
+          outputName,
+          priceSlug: effectivePriceSlug,
+          quantity,
+        },
+      }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.log("Flowglad checkout session error:", data);
+      return c.json({ success: false, error: data }, response.status);
+    }
+
+    return c.json({ success: true, ...data });
+  } catch (error) {
+    console.log("Error creating Flowglad checkout session:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
+app.get("/make-server-c63c7d45/flowglad/checkout-session/:id", async (c) => {
+  try {
+    const flowgladKey = Deno.env.get("FLOWGLAD_SECRET_KEY");
+    if (!flowgladKey) {
+      return c.json({ success: false, error: "Flowglad secret key not configured" }, 500);
+    }
+
+    const id = c.req.param("id");
+    const response = await fetch(`${FLOWGLAD_API_BASE}/checkout-sessions/${id}`, {
+      headers: {
+        "Authorization": `Bearer ${flowgladKey}`,
+      },
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.log("Flowglad get checkout session error:", data);
+      return c.json({ success: false, error: data }, response.status);
+    }
+
+    return c.json({ success: true, ...data });
+  } catch (error) {
+    console.log("Error fetching Flowglad checkout session:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
 // Ride request endpoints
 app.post("/make-server-c63c7d45/ride-request", async (c) => {
   try {
     const request = await c.req.json();
     const requestId = `ride_request_${request.userId}_${Date.now()}`;
-    const requestWithId = { ...request, id: requestId, createdAt: new Date().toISOString() };
+    const requestWithId = {
+      ...request,
+      id: requestId,
+      status: request.status ?? "pending",
+      createdAt: new Date().toISOString(),
+    };
     await kv.set(requestId, requestWithId);
     return c.json({ success: true, request: requestWithId });
   } catch (error) {
     console.log("Error creating ride request:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
+app.put("/make-server-c63c7d45/ride-request/:id", async (c) => {
+  try {
+    const id = c.req.param("id");
+    const updates = await c.req.json();
+    const existingRequest = await kv.get(id);
+    if (!existingRequest) {
+      return c.json({ success: false, error: "Ride request not found" }, 404);
+    }
+    const updatedRequest = { ...existingRequest, ...updates };
+    await kv.set(id, updatedRequest);
+    return c.json({ success: true, request: updatedRequest });
+  } catch (error) {
+    console.log("Error updating ride request:", error);
     return c.json({ success: false, error: String(error) }, 500);
   }
 });
@@ -193,6 +334,32 @@ app.get("/make-server-c63c7d45/ride-requests/:userId", async (c) => {
   }
 });
 
+app.get("/make-server-c63c7d45/ride-requests", async (c) => {
+  try {
+    const requestsData = await kv.getByPrefix("ride_request_");
+    const requests = requestsData || [];
+    return c.json({ success: true, requests });
+  } catch (error) {
+    console.log("Error fetching all ride requests:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
+app.delete("/make-server-c63c7d45/ride-requests/:userId", async (c) => {
+  try {
+    const userId = c.req.param("userId");
+    const requestsData = await kv.getByPrefix(`ride_request_${userId}_`);
+    const requestKeys = (requestsData || []).map((request: any) => request.id).filter(Boolean);
+    if (requestKeys.length > 0) {
+      await kv.mdel(requestKeys);
+    }
+    return c.json({ success: true });
+  } catch (error) {
+    console.log("Error deleting ride requests:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
 // Find matching ride requests
 app.post("/make-server-c63c7d45/find-matches", async (c) => {
   try {
@@ -201,15 +368,19 @@ app.post("/make-server-c63c7d45/find-matches", async (c) => {
     // Get all ride requests
     const allRequestsData = await kv.getByPrefix("ride_request_");
     const allRequests = allRequestsData || [];
+    const now = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
     
     // Filter matches based on criteria
-    const matches = allRequests.filter((request: any) => {
+    const filtered = allRequests.filter((request: any) => {
       // Don't match with yourself
       if (request.userId === userId) return false;
+
+      if (request.status !== "pending") return false;
       
       // Must be same airport
       if (request.airport !== airport) return false;
-      
+
       // Check current user's gender preference
       if (preferences.genderPreference !== "no-preference" && 
           request.userGender !== preferences.genderPreference) {
@@ -227,11 +398,32 @@ app.post("/make-server-c63c7d45/find-matches", async (c) => {
       const requestTime = new Date(request.departureTime).getTime();
       const timeDiff = Math.abs(userTime - requestTime) / (1000 * 60); // minutes
       if (timeDiff > 120) return false; // more than 2 hours apart
+
+      // Ignore stale requests (older than 24h) or rides already in the past
+      if (!request.createdAt) return false;
+      const createdAtTime = new Date(request.createdAt).getTime();
+      if (createdAtTime < now - oneDayMs) return false;
+      if (requestTime < now - 15 * 60 * 1000) return false;
       
       return true;
     });
+
+    // Deduplicate by requester (keep most recent)
+    const deduped = new Map<string, any>();
+    for (const request of filtered) {
+      const existing = deduped.get(request.userId);
+      if (!existing) {
+        deduped.set(request.userId, request);
+        continue;
+      }
+      const existingTime = new Date(existing.createdAt ?? existing.departureTime).getTime();
+      const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
+      if (requestTime > existingTime) {
+        deduped.set(request.userId, request);
+      }
+    }
     
-    return c.json({ success: true, matches });
+    return c.json({ success: true, matches: Array.from(deduped.values()) });
   } catch (error) {
     console.log("Error finding matches:", error);
     return c.json({ success: false, error: String(error) }, 500);

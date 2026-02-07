@@ -1,7 +1,7 @@
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { ArrowLeft, Home } from "lucide-react";
-import logo from "figma:asset/7107bd02e613dd856c16fb749845e9f675c7d7ba.png";
+import logo from "@/assets/7107bd02e613dd856c16fb749845e9f675c7d7ba.png";
 
 interface DestinationSelectionProps {
   onSelectAirport: (airport: string) => void;

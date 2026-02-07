@@ -4,7 +4,7 @@ import { Card } from "@/app/components/ui/card";
 import { Input } from "@/app/components/ui/input";
 import { Label } from "@/app/components/ui/label";
 import { Mail, Lock, ArrowLeft, AlertCircle } from "lucide-react";
-import logo from "figma:asset/7107bd02e613dd856c16fb749845e9f675c7d7ba.png";
+import logo from "@/assets/7107bd02e613dd856c16fb749845e9f675c7d7ba.png";
 
 interface LoginProps {
   onLogin: (email: string, password: string) => Promise<void>;

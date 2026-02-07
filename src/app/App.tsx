@@ -25,6 +25,8 @@ interface Match {
 interface Chat {
   id: string;
   match: Match;
+  participants?: string[];
+  participantProfiles?: Record<string, { name: string; initials: string }>;
   lastMessage: string;
   lastMessageTime: Date;
   unreadCount: number;
@@ -40,6 +42,7 @@ interface OutgoingRequest {
   destination: string;
   departureTime: string;
   status: "pending" | "accepted" | "rejected";
+  acceptedByName?: string;
   timestamp: Date;
 }
 
@@ -56,6 +59,92 @@ export default function App() {
   const [outgoingRequests, setOutgoingRequests] = useState<OutgoingRequest[]>([]);
 
   const API_URL = `https://${projectId}.supabase.co/functions/v1/make-server-c63c7d45`;
+
+  const loadRideRequests = async (currentUserId: string) => {
+    try {
+      const response = await fetch(`${API_URL}/ride-requests`, {
+        headers: {
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+      });
+      const data = await response.json();
+      if (!data.success) {
+        console.error("Failed to load ride requests:", data.error);
+        setRideRequests([]);
+        setOutgoingRequests([]);
+        return;
+      }
+
+      const allRequests = (data.requests || []).filter((request: any) => request.userId);
+
+      const incomingMap = new Map<string, any>();
+      for (const request of allRequests) {
+        if (request.userId === currentUserId) continue;
+        if (request.status && request.status !== "pending") continue;
+        const existing = incomingMap.get(request.userId);
+        if (!existing) {
+          incomingMap.set(request.userId, request);
+          continue;
+        }
+        const existingTime = new Date(existing.createdAt ?? existing.departureTime).getTime();
+        const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
+        if (requestTime > existingTime) {
+          incomingMap.set(request.userId, request);
+        }
+      }
+
+      const requests = Array.from(incomingMap.values()).map((request: any) => ({
+        id: request.id,
+        requesterId: request.userId,
+        requesterName: request.userName,
+        requesterInitials: request.userInitials || request.userName.split(" ").map((part: string) => part[0]).join(""),
+        requesterAge: request.userAge ?? 0,
+        requesterGender: request.userGender,
+        pickupLocation: request.pickupLocation,
+        destination: request.airport,
+        departureTime: request.departureTime,
+        distance: "—",
+        baggageSize: request.baggageSize ?? "Medium",
+        status: request.status ?? "pending",
+        timestamp: new Date(request.createdAt ?? Date.now()),
+      }));
+
+      let latestOutgoing: any = null;
+      for (const request of allRequests) {
+        if (request.userId !== currentUserId) continue;
+        if (!latestOutgoing) {
+          latestOutgoing = request;
+          continue;
+        }
+        const existingTime = new Date(latestOutgoing.createdAt ?? latestOutgoing.departureTime).getTime();
+        const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
+        if (requestTime > existingTime) {
+          latestOutgoing = request;
+        }
+      }
+
+      const outgoing = latestOutgoing
+        ? [{
+            id: latestOutgoing.id,
+            recipientId: "public",
+            recipientName: "Public request",
+            recipientInitials: "PR",
+            destination: latestOutgoing.airport,
+            departureTime: latestOutgoing.departureTime,
+            status: latestOutgoing.status ?? "pending",
+            acceptedByName: latestOutgoing.acceptedByName,
+            timestamp: new Date(latestOutgoing.createdAt ?? Date.now()),
+          }]
+        : [];
+
+      setRideRequests(requests);
+      setOutgoingRequests(outgoing);
+    } catch (error) {
+      console.error("Error loading ride requests:", error);
+      setRideRequests([]);
+      setOutgoingRequests([]);
+    }
+  };
 
   // Check for existing session on mount
   useEffect(() => {
@@ -78,56 +167,7 @@ export default function App() {
           if (data.success && data.profile) {
             setUserProfile(data.profile);
             await loadChats(data.profile.id);
-            
-            // Add mock ride requests for demo purposes
-            const mockRequests: RideRequest[] = [
-              {
-                id: "req_1",
-                requesterId: "user_123",
-                requesterName: "Sarah Johnson",
-                requesterInitials: "SJ",
-                requesterAge: 21,
-                requesterGender: "female",
-                pickupLocation: "John Jay Hall",
-                destination: "JFK",
-                departureTime: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
-                distance: "0.3 miles",
-                baggageSize: "Medium",
-                status: "pending",
-                timestamp: new Date(Date.now() - 30 * 60 * 1000),
-              },
-              {
-                id: "req_2",
-                requesterId: "user_456",
-                requesterName: "Michael Chen",
-                requesterInitials: "MC",
-                requesterAge: 23,
-                requesterGender: "male",
-                pickupLocation: "Wien Hall",
-                destination: "LGA",
-                departureTime: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-                distance: "0.5 miles",
-                baggageSize: "Large",
-                status: "pending",
-                timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000),
-              },
-            ];
-            setRideRequests(mockRequests);
-            
-            // Add mock outgoing requests
-            const mockOutgoingRequests: OutgoingRequest[] = [
-              {
-                id: "out_req_1",
-                recipientId: "user_789",
-                recipientName: "Emma Rodriguez",
-                recipientInitials: "ER",
-                destination: "EWR",
-                departureTime: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString(),
-                status: "pending",
-                timestamp: new Date(Date.now() - 45 * 60 * 1000),
-              },
-            ];
-            setOutgoingRequests(mockOutgoingRequests);
+            await loadRideRequests(data.profile.id);
             
             setCurrentScreen("chatList");
           } else {
@@ -147,6 +187,20 @@ export default function App() {
     checkSession();
   }, []);
 
+  useEffect(() => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.access_token) {
+        setAccessToken(session.access_token);
+      } else if (event === "SIGNED_OUT") {
+        setAccessToken(null);
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
   const loadChats = async (userId: string) => {
     try {
       const response = await fetch(`${API_URL}/chats/${userId}`, {
@@ -162,14 +216,116 @@ export default function App() {
             ...chat,
             lastMessageTime: new Date(chat.lastMessageTime),
           }));
+
+          const normalizedChats = await Promise.all(parsedChats.map(async (chat: any) => {
+            if (!chat.participants || chat.match?.id !== userId) {
+              return chat;
+            }
+
+            const otherId = chat.participants.find((id: string) => id !== userId);
+            if (!otherId) {
+              return chat;
+            }
+
+            const participantProfiles = chat.participantProfiles || {};
+            const otherProfile = participantProfiles[otherId];
+            if (otherProfile) {
+              return {
+                ...chat,
+                match: {
+                  ...chat.match,
+                  id: otherId,
+                  name: otherProfile.name,
+                  initials: otherProfile.initials,
+                },
+              };
+            }
+
+            try {
+              const profileResponse = await fetch(`${API_URL}/profile/${otherId}`, {
+                headers: {
+                  'Authorization': `Bearer ${publicAnonKey}`,
+                },
+              });
+              const profileData = await profileResponse.json();
+              if (profileData.success && profileData.profile) {
+                const name = profileData.profile.name || "Ride Partner";
+                const initials = name.split(" ").map((part: string) => part[0]).join("").slice(0, 2).toUpperCase();
+                return {
+                  ...chat,
+                  match: {
+                    ...chat.match,
+                    id: otherId,
+                    name,
+                    initials,
+                  },
+                };
+              }
+            } catch (error) {
+              console.error("Error loading other profile:", error);
+            }
+
+            return {
+              ...chat,
+              match: {
+                ...chat.match,
+                id: otherId,
+                name: "Ride Partner",
+                initials: "RP",
+              },
+            };
+          }));
+
+          const enrichedChats = await Promise.all(normalizedChats.map(async (chat: any) => {
+            if (chat.lastMessage) {
+              return chat;
+            }
+            try {
+              const messagesResponse = await fetch(`${API_URL}/messages/${chat.id}`, {
+                headers: {
+                  'Authorization': `Bearer ${publicAnonKey}`,
+                },
+              });
+              const messagesData = await messagesResponse.json();
+              if (messagesData.success && messagesData.messages?.length) {
+                const sortedMessages = [...messagesData.messages].sort((a: any, b: any) => {
+                  const aTime = new Date(a.timestamp).getTime();
+                  const bTime = new Date(b.timestamp).getTime();
+                  return aTime - bTime;
+                });
+                const lastMessage = sortedMessages[sortedMessages.length - 1];
+                return {
+                  ...chat,
+                  lastMessage: lastMessage.message,
+                  lastMessageTime: new Date(lastMessage.timestamp),
+                };
+              }
+            } catch (error) {
+              console.error("Error loading last message:", error);
+            }
+            return chat;
+          }));
+
           // Sort chats by most recent message first
-          parsedChats.sort((a: Chat, b: Chat) => 
+          enrichedChats.sort((a: Chat, b: Chat) => 
             b.lastMessageTime.getTime() - a.lastMessageTime.getTime()
           );
-          setChats(parsedChats);
+          setChats(prevChats => {
+            const prevById = new Map(prevChats.map(chat => [chat.id, chat]));
+            const merged = enrichedChats.map(chat => {
+              const prev = prevById.get(chat.id);
+              if (!prev) return chat;
+              const prevTime = prev.lastMessageTime?.getTime?.() ?? 0;
+              const serverTime = chat.lastMessageTime?.getTime?.() ?? 0;
+              return prevTime > serverTime ? prev : chat;
+            });
+            const serverIds = new Set(enrichedChats.map(chat => chat.id));
+            merged.push(...prevChats.filter(chat => !serverIds.has(chat.id)));
+            return merged;
+          });
         } else {
-          // No chats found, set empty array
-          setChats([]);
+          // No chats found from server; keep existing local chats
+          setChats(prevChats => prevChats);
         }
       }
     } catch (error) {
@@ -235,19 +391,78 @@ export default function App() {
         // Set profile
         setUserProfile(profile);
         
-        // If we have a session, set the token; otherwise proceed anyway
+        // Ensure a session is persisted for login
         if (authData.session?.access_token) {
           setAccessToken(authData.session.access_token);
+        } else {
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+            email: data.email,
+            password: data.password,
+          });
+          if (signInError) {
+            console.error("Auto login after signup failed:", signInError);
+          } else if (signInData.session?.access_token) {
+            setAccessToken(signInData.session.access_token);
+          }
         }
         
         // Always navigate to chatList after successful profile creation
         console.log("Navigating to chatList");
+        await loadRideRequests(profile.id);
         setCurrentScreen("chatList");
       } else {
         throw new Error(result.error || "Failed to create profile");
       }
     } catch (error) {
       console.error("Error during signup:", error);
+      throw error;
+    }
+  };
+
+  const ensureProfile = async (userId: string, email: string) => {
+    try {
+      const response = await fetch(`${API_URL}/profile/${userId}`, {
+        headers: {
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+      });
+      const data = await response.json();
+      if (data.success && data.profile) {
+        return data.profile as UserProfile;
+      }
+
+      const nameFromEmail = email.split("@")[0].replace(/[._-]+/g, " ");
+      const inferredName = nameFromEmail
+        .split(" ")
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ")
+        .trim() || "Student";
+
+      const fallbackProfile: UserProfile = {
+        id: userId,
+        name: inferredName,
+        email,
+        age: 0,
+        gender: "not-specified",
+        phoneNumber: "",
+      };
+
+      const createResponse = await fetch(`${API_URL}/profile`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+        body: JSON.stringify(fallbackProfile),
+      });
+      const createResult = await createResponse.json();
+      if (createResult.success) {
+        return fallbackProfile;
+      }
+
+      throw new Error(createResult.error || "Failed to create profile");
+    } catch (error) {
+      console.error("Error ensuring profile:", error);
       throw error;
     }
   };
@@ -269,20 +484,12 @@ export default function App() {
 
       if (authData?.session?.access_token) {
         setAccessToken(authData.session.access_token);
-        
-        // Load user profile
-        const response = await fetch(`${API_URL}/profile/${authData.user.id}`, {
-          headers: {
-            'Authorization': `Bearer ${publicAnonKey}`,
-          },
-        });
-        const data = await response.json();
-        
-        if (data.success && data.profile) {
-          setUserProfile(data.profile);
-          await loadChats(data.profile.id);
-          setCurrentScreen("chatList");
-        }
+
+        const profile = await ensureProfile(authData.user.id, email);
+        setUserProfile(profile);
+        await loadChats(profile.id);
+        await loadRideRequests(profile.id);
+        setCurrentScreen("chatList");
       }
     } catch (error) {
       console.error("Error during login:", error);
@@ -320,9 +527,21 @@ export default function App() {
     if (!userProfile) return;
 
     // Create a new chat with unique ID and include pickup time
+    const participants = [userProfile.id, match.id].sort();
     const newChat: Chat = {
-      id: `${userProfile.id}_${match.id}`,
+      id: participants.join("_"),
       match,
+      participants,
+      participantProfiles: {
+        [userProfile.id]: {
+          name: userProfile.name,
+          initials: userProfile.name.split(" ").map(part => part[0]).join("").slice(0, 2).toUpperCase(),
+        },
+        [match.id]: {
+          name: match.name,
+          initials: match.initials,
+        },
+      },
       lastMessage: "",
       lastMessageTime: new Date(),
       unreadCount: 0,
@@ -388,6 +607,7 @@ export default function App() {
     setSelectedMatch(null);
     if (userProfile) {
       loadChats(userProfile.id);
+      loadRideRequests(userProfile.id);
     }
   };
 
@@ -397,7 +617,22 @@ export default function App() {
     setSelectedMatch(null);
     setSelectedAirport("");
     setUserPreferences(null);
+    if (userProfile) {
+      loadChats(userProfile.id);
+      loadRideRequests(userProfile.id);
+    }
   };
+
+  useEffect(() => {
+    if (currentScreen !== "chatList" || !userProfile) return;
+    const intervalId = window.setInterval(() => {
+      loadChats(userProfile.id);
+    }, 5000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [currentScreen, userProfile?.id]);
 
   const handleShowProfile = () => {
     setCurrentScreen("profile");
@@ -446,6 +681,8 @@ export default function App() {
   };
 
   const handleShowInbox = () => {
+    if (!userProfile) return;
+    loadRideRequests(userProfile.id);
     setCurrentScreen("inbox");
   };
 
@@ -453,14 +690,26 @@ export default function App() {
     if (!userProfile) return;
 
     // Create a chat with the requester
+    const participants = [userProfile.id, request.requesterId].sort();
     const newChat: Chat = {
-      id: `${userProfile.id}_${request.requesterId}`,
+      id: participants.join("_"),
       match: {
         id: request.requesterId,
         name: request.requesterName,
         initials: request.requesterInitials,
         pickupLocation: request.pickupLocation,
         distance: request.distance,
+      },
+      participants,
+      participantProfiles: {
+        [userProfile.id]: {
+          name: userProfile.name,
+          initials: userProfile.name.split(" ").map(part => part[0]).join("").slice(0, 2).toUpperCase(),
+        },
+        [request.requesterId]: {
+          name: request.requesterName,
+          initials: request.requesterInitials,
+        },
       },
       lastMessage: "",
       lastMessageTime: new Date(),
@@ -482,6 +731,45 @@ export default function App() {
       const data = await response.json();
       
       if (data.success) {
+        await Promise.all([
+          fetch(`${API_URL}/ride-request/${request.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${publicAnonKey}`,
+            },
+            body: JSON.stringify({
+              status: "accepted",
+              acceptedById: userProfile.id,
+              acceptedByName: userProfile.name,
+              acceptedByInitials: userProfile.name.split(" ").map(part => part[0]).join(""),
+              acceptedAt: new Date().toISOString(),
+            }),
+          }),
+          fetch(`${API_URL}/ride-requests/${userProfile.id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${publicAnonKey}`,
+            },
+          }),
+        ]);
+
+        await fetch(`${API_URL}/message`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+          body: JSON.stringify({
+            id: Date.now().toString(),
+            chatId: newChat.id,
+            sender: "me",
+            senderId: userProfile.id,
+            message: "✅ Ride request accepted! This chat is now open.",
+            timestamp: new Date(),
+          }),
+        });
+
         // Update ride request status to accepted
         setRideRequests(prevRequests =>
           prevRequests.map(r =>

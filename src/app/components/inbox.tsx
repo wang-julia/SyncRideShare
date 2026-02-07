@@ -118,7 +118,7 @@ export function Inbox({ requests, onAcceptRequest, onRejectRequest, onBack }: In
                         </span>
                       </div>
                       <div className="text-sm text-gray-600 mb-2">
-                        {request.requesterAge} • {request.requesterGender}
+                        {request.requesterAge ? `${request.requesterAge}` : "Age not provided"} • {request.requesterGender}
                       </div>
                     </div>
                   </div>

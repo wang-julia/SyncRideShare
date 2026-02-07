@@ -77,16 +77,25 @@ export function PreferencesForm({ airport, userProfile, onSubmit, onBack, onHome
       genderPreference,
     };
 
-    // Save the ride request to the database (commented out until backend is ready)
-    // In a production app, this would save to the backend
-    /*
     try {
+      await fetch(`${API_URL}/ride-requests/${userProfile.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+      });
+
+      const nameParts = userProfile.name.split(" ");
+      const initials = nameParts.map(part => part[0]).join("");
       const rideRequest = {
         userId: userProfile.id,
         userName: userProfile.name,
+        userInitials: initials,
+        userAge: userProfile.age,
         userGender: userProfile.gender,
         airport,
         ...preferences,
+        status: "pending",
       };
 
       const response = await fetch(`${API_URL}/ride-request`, {
@@ -116,7 +125,6 @@ export function PreferencesForm({ airport, userProfile, onSubmit, onBack, onHome
     } catch (error) {
       console.error('Error saving ride request:', error);
     }
-    */
 
     // Continue to matches screen
     onSubmit(preferences);

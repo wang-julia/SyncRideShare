@@ -44,6 +44,7 @@ interface OutgoingRequest {
   destination: string;
   departureTime: string;
   status: "pending" | "accepted" | "rejected";
+  acceptedByName?: string;
   timestamp: Date;
 }
 
@@ -259,8 +260,8 @@ export function ChatList({
                 {/* Outgoing Requests */}
                 {outgoingRequests.length > 0 && (
                   <div className="space-y-2">
-                    <div className="text-xs text-orange-700 mb-2 font-medium">Pending Your Requests ({outgoingRequests.length})</div>
-                    {outgoingRequests.slice(0, 2).map((request) => (
+                    <div className="text-xs text-orange-700 mb-2 font-medium">Your Ride Request</div>
+                    {outgoingRequests.slice(0, 1).map((request) => (
                       <div key={request.id} className="bg-orange-50 rounded-lg p-3 border-2 border-orange-200">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 flex-1">
@@ -270,14 +271,18 @@ export function ChatList({
                               </AvatarFallback>
                             </Avatar>
                             <div className="flex-1 min-w-0">
-                              <div className="font-semibold text-sm text-gray-900">Waiting for {request.recipientName}</div>
+                              <div className="font-semibold text-sm text-gray-900">
+                                {request.status === "accepted" && request.acceptedByName
+                                  ? `Fulfilled by ${request.acceptedByName}`
+                                  : `Waiting for ${request.recipientName}`}
+                              </div>
                               <div className="text-xs text-gray-600 flex items-center gap-1">
                                 <Clock className="w-3 h-3 text-orange-500" />
                                 {request.destination} • {formatTime(request.timestamp)}
                               </div>
                             </div>
                           </div>
-                          {onCancelRequest && (
+                          {request.status === "pending" && onCancelRequest && (
                             <Button
                               onClick={() => onCancelRequest(request.id)}
                               variant="ghost"
@@ -290,17 +295,6 @@ export function ChatList({
                         </div>
                       </div>
                     ))}
-                    {outgoingRequests.length > 2 && onInbox && (
-                      <Button
-                        onClick={onInbox}
-                        variant="ghost"
-                        size="sm"
-                        className="w-full text-xs h-8 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
-                      >
-                        View all {outgoingRequests.length} pending requests
-                        <ArrowRight className="w-3 h-3 ml-1" />
-                      </Button>
-                    )}
                   </div>
                 )}
               </div>
@@ -366,10 +360,10 @@ export function ChatList({
                       {chat.lastMessage || "No messages yet"}
                     </p>
 
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1 text-xs text-gray-500 min-w-0 flex-1">
                         <MapPin className="w-3 h-3" />
-                        <span className="truncate">{chat.match.pickupLocation}</span>
+                        <span className="truncate block">{chat.match.pickupLocation}</span>
                       </div>
                       {chat.unreadCount > 0 && (
                         <Badge className="text-white h-5 min-w-5 rounded-full font-semibold shadow-sm" style={{ backgroundColor: '#4a85c8' }}>

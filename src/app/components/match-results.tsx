@@ -60,84 +60,144 @@ export function MatchResults({ airport, preferences, userProfile, onSelectMatch,
   const [confirmingMatch, setConfirmingMatch] = useState<Match | null>(null);
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
+  const [requestStatus, setRequestStatus] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
 
   const API_URL = `https://${projectId}.supabase.co/functions/v1/make-server-c63c7d45`;
 
-  // Generate mock matches (will fetch from backend when ready)
   useEffect(() => {
-    const generateMockMatches = () => {
+    const loadMatches = async () => {
       setLoading(true);
-      
-      // Mock data for demonstration
-      const mockUsers = [
-        { name: "Emma Rodriguez", gender: "female", pickupLocation: "John Jay Hall", latitude: 40.8075, longitude: -73.9626 },
-        { name: "James Anderson", gender: "male", pickupLocation: "Wien Hall", latitude: 40.8055, longitude: -73.9635 },
-        { name: "Sofia Martinez", gender: "female", pickupLocation: "Carman Hall", latitude: 40.8065, longitude: -73.9615 },
-        { name: "Alex Chen", gender: "non-binary", pickupLocation: "Furnald Hall", latitude: 40.8070, longitude: -73.9640 },
-        { name: "Michael Thompson", gender: "male", pickupLocation: "Broadway Residence Hall", latitude: 40.8080, longitude: -73.9620 },
-      ];
+      setRequestStatus("idle");
+      try {
+        const response = await fetch(`${API_URL}/find-matches`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${publicAnonKey}`,
+          },
+          body: JSON.stringify({
+            airport,
+            preferences,
+            userId: userProfile.id,
+            userGender: userProfile.gender,
+          }),
+        });
 
-      const processedMatches = mockUsers
-        .filter(user => {
-          // Filter by gender preference
-          if (preferences.genderPreference !== "no-preference") {
-            return user.gender === preferences.genderPreference;
+        const data = await response.json();
+        if (!data.success) {
+          console.error("Failed to find matches:", data.error);
+          setMatches([]);
+          return;
+        }
+
+        const uniqueByUser = new Map<string, any>();
+        for (const request of data.matches || []) {
+          const existing = uniqueByUser.get(request.userId);
+          if (!existing) {
+            uniqueByUser.set(request.userId, request);
+            continue;
           }
-          return true;
-        })
-        .map(user => {
-          const distance = calculateDistance(
-            preferences.latitude,
-            preferences.longitude,
-            user.latitude,
-            user.longitude
-          );
-          
-          // Generate a random time offset within 2 hours
-          const userTime = new Date(preferences.departureTime).getTime();
-          const randomOffset = (Math.random() - 0.5) * 2 * 60 * 60 * 1000; // +/- 1 hour
-          const matchTime = new Date(userTime + randomOffset);
-          const timeDiffMinutes = Math.abs(userTime - matchTime.getTime()) / 60000;
-          
-          // Calculate match score based on distance and time proximity
-          const distanceScore = Math.max(0, 50 - (distance * 50));
-          const timeScore = Math.max(0, 50 - (timeDiffMinutes / 15 * 50));
-          const matchScore = Math.round(distanceScore + timeScore);
+          const existingTime = new Date(existing.createdAt ?? existing.departureTime).getTime();
+          const requestTime = new Date(request.createdAt ?? request.departureTime).getTime();
+          if (requestTime > existingTime) {
+            uniqueByUser.set(request.userId, request);
+          }
+        }
 
-          // Calculate estimated cost
-          const estimatedCost = Math.round(25 + Math.random() * 10);
+        const processedMatches = Array.from(uniqueByUser.values())
+          .map((request: any) => {
+            const distance = calculateDistance(
+              preferences.latitude,
+              preferences.longitude,
+              request.latitude,
+              request.longitude
+            );
 
-          // Get initials from name
-          const nameParts = user.name.split(' ');
-          const initials = nameParts.map(part => part[0]).join('');
+            const userTime = new Date(preferences.departureTime).getTime();
+            const matchTime = new Date(request.departureTime);
+            const timeDiffMinutes = Math.abs(userTime - matchTime.getTime()) / 60000;
 
-          // Random baggage size
-          const baggageSizes = ["Small", "Medium", "Large"];
-          const baggageSize = baggageSizes[Math.floor(Math.random() * baggageSizes.length)];
+            const distanceScore = Math.max(0, 50 - (distance * 50));
+            const timeScore = Math.max(0, 50 - (timeDiffMinutes / 15 * 50));
+            const matchScore = Math.round(distanceScore + timeScore);
 
-          return {
-            id: `user_${user.name.replace(/\s/g, '_').toLowerCase()}`,
-            name: user.name,
-            initials: initials,
-            gender: user.gender,
-            pickupLocation: user.pickupLocation,
-            departureTime: matchTime.toLocaleString(),
-            baggageSize: baggageSize,
-            estimatedCost,
-            matchScore,
-            distance: `${distance.toFixed(1)} mi away`,
-            latitude: user.latitude,
-            longitude: user.longitude,
-          };
-        })
-        .sort((a, b) => b.matchScore - a.matchScore);
+            const estimatedCost = Math.round(25 + Math.random() * 10);
+            const nameParts = request.userName.split(" ");
+            const initials = nameParts.map((part: string) => part[0]).join("");
 
-      setMatches(processedMatches);
-      setLoading(false);
+            return {
+              id: request.userId,
+              name: request.userName,
+              initials,
+              gender: request.userGender,
+              pickupLocation: request.pickupLocation,
+              departureTime: matchTime.toLocaleString(),
+              baggageSize: request.baggageSize ?? "Medium",
+              estimatedCost,
+              matchScore,
+              distance: `${distance.toFixed(1)} mi away`,
+              latitude: request.latitude,
+              longitude: request.longitude,
+            };
+          })
+          .sort((a: Match, b: Match) => b.matchScore - a.matchScore);
+
+        setMatches(processedMatches);
+      } catch (error) {
+        console.error("Error loading matches:", error);
+        setMatches([]);
+      } finally {
+        setLoading(false);
+      }
     };
 
-    generateMockMatches();
-  }, [airport, preferences, userProfile.id]);
+    loadMatches();
+  }, [airport, preferences, userProfile.id, userProfile.gender]);
+
+  const handlePostRideRequest = async () => {
+    setRequestStatus("submitting");
+    try {
+      await fetch(`${API_URL}/ride-requests/${userProfile.id}`, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${publicAnonKey}`,
+        },
+      });
+
+      const nameParts = userProfile.name.split(" ");
+      const initials = nameParts.map(part => part[0]).join("");
+
+      const rideRequest = {
+        userId: userProfile.id,
+        userName: userProfile.name,
+        userInitials: initials,
+        userAge: userProfile.age,
+        userGender: userProfile.gender,
+        airport,
+        ...preferences,
+        status: "pending",
+      };
+
+      const response = await fetch(`${API_URL}/ride-request`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${publicAnonKey}`,
+        },
+        body: JSON.stringify(rideRequest),
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.error || "Failed to post ride request.");
+      }
+
+      setRequestStatus("submitted");
+    } catch (error) {
+      console.error("Error posting ride request:", error);
+      setRequestStatus("error");
+    }
+  };
 
   const handleMatchClick = (match: Match) => {
     setConfirmingMatch(match);
@@ -182,12 +242,33 @@ export function MatchResults({ airport, preferences, userProfile, onSelectMatch,
               <p className="text-sm text-gray-500">
                 Try adjusting your preferences or check back later when more students post their trips.
               </p>
+              <div className="mt-4 space-y-2">
+                <Button
+                  onClick={handlePostRideRequest}
+                  className="w-full hover:bg-opacity-90"
+                  style={{ backgroundColor: '#4a85c8' }}
+                  disabled={requestStatus === "submitting" || requestStatus === "submitted"}
+                >
+                  {requestStatus === "submitting"
+                    ? "Sending ride request..."
+                    : requestStatus === "submitted"
+                    ? "Ride request sent"
+                    : "Send a ride request"}
+                </Button>
+                {requestStatus === "error" && (
+                  <p className="text-xs text-red-600">We couldn’t send your request. Please try again.</p>
+                )}
+                {requestStatus === "submitted" && (
+                  <p className="text-xs text-green-600">Your request is now pending.</p>
+                )}
+              </div>
             </Card>
           ) : (
-            matches.map((match) => (
-              <Card key={match.id} className="p-4 hover:shadow-lg transition-shadow">
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-3">
+            <>
+              {matches.map((match) => (
+                <Card key={match.id} className="p-4 hover:shadow-lg transition-shadow">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
                     <Avatar className="w-12 h-12 ring-2 ring-offset-2 ring-[#4a85c8]">
                       <AvatarFallback style={{ backgroundColor: '#4a85c8' }} className="text-white">
                         {match.initials}
@@ -220,18 +301,42 @@ export function MatchResults({ airport, preferences, userProfile, onSelectMatch,
                     <DollarSign className="w-4 h-4 text-green-600" />
                     <span className="text-green-600">${match.estimatedCost} per person</span>
                   </div>
-                </div>
+                  </div>
 
+                  <Button
+                    onClick={() => handleMatchClick(match)}
+                    className="w-full hover:bg-opacity-90"
+                    style={{ backgroundColor: '#4a85c8' }}
+                  >
+                    <MessageCircle className="w-4 h-4 mr-2" />
+                    Connect with {match.name.split(' ')[0]}
+                  </Button>
+                </Card>
+              ))}
+              <Card className="p-4 text-center">
+                <p className="text-sm text-gray-600 mb-3">
+                  Not seeing the right match?
+                </p>
                 <Button
-                  onClick={() => handleMatchClick(match)}
+                  onClick={handlePostRideRequest}
                   className="w-full hover:bg-opacity-90"
                   style={{ backgroundColor: '#4a85c8' }}
+                  disabled={requestStatus === "submitting" || requestStatus === "submitted"}
                 >
-                  <MessageCircle className="w-4 h-4 mr-2" />
-                  Connect with {match.name.split(' ')[0]}
+                  {requestStatus === "submitting"
+                    ? "Sending ride request..."
+                    : requestStatus === "submitted"
+                    ? "Ride request sent"
+                    : "Send a ride request"}
                 </Button>
+                {requestStatus === "error" && (
+                  <p className="text-xs text-red-600 mt-2">We couldn’t send your request. Please try again.</p>
+                )}
+                {requestStatus === "submitted" && (
+                  <p className="text-xs text-green-600 mt-2">Your request is now pending.</p>
+                )}
               </Card>
-            ))
+            </>
           )}
         </div>
       </div>

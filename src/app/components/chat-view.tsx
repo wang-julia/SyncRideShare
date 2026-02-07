@@ -41,6 +41,16 @@ interface RideRequest {
   timestamp: Date;
 }
 
+interface RideBookingInfo {
+  bookedBy: string;
+  totalAmount: number;
+  splitAmount: number;
+  splitAmountCents: number;
+  receiptUrl: string;
+  paymentStatus: "pending" | "paid" | "none";
+  checkoutSessionId?: string | null;
+}
+
 interface ChatViewProps {
   match: {
     id: string;
@@ -64,10 +74,12 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [isConfirmed, setIsConfirmed] = useState(false);
+  const [confirmations, setConfirmations] = useState<Record<string, boolean>>({});
   const [baggageSize, setBaggageSize] = useState<"small" | "medium" | "large">("medium");
   const [pickupLocation, setPickupLocation] = useState<[number, number]>([40.8090, -73.9612]);
   const [pickupAddress, setPickupAddress] = useState<string>("Broadway & 116th St");
+  const isFullyConfirmed = !!(confirmations[userId] && confirmations[match.id]);
+  const isCurrentUserConfirmed = !!confirmations[userId];
 
   const API_URL = `https://${projectId}.supabase.co/functions/v1/make-server-c63c7d45`;
 
@@ -100,9 +112,8 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
       
       if (data.success && data.chat) {
         console.log("Loaded chat details:", data.chat);
-        // Load saved confirmation state
-        if (data.chat.isConfirmed !== undefined) {
-          setIsConfirmed(data.chat.isConfirmed);
+        if (data.chat.confirmations) {
+          setConfirmations(data.chat.confirmations);
         }
         // Load saved baggage size
         if (data.chat.baggageSize) {
@@ -115,6 +126,11 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
         // Load saved pickup address
         if (data.chat.pickupAddress) {
           setPickupAddress(data.chat.pickupAddress);
+        }
+        if (data.chat.rideBookingInfo) {
+          const storedInfo = data.chat.rideBookingInfo as RideBookingInfo;
+          const splitAmountCents = storedInfo.splitAmountCents ?? Math.round(storedInfo.splitAmount * 100);
+          setRideBookingInfo({ ...storedInfo, splitAmountCents });
         }
       }
     } catch (error) {
@@ -158,13 +174,10 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
   const [rideAmount, setRideAmount] = useState("");
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string | null>(null);
-  const [rideBookingInfo, setRideBookingInfo] = useState<{
-    bookedBy: string;
-    totalAmount: number;
-    splitAmount: number;
-    receiptUrl: string;
-    paymentStatus: "pending" | "paid" | "none";
-  } | null>(null);
+  const [rideBookingInfo, setRideBookingInfo] = useState<RideBookingInfo | null>(null);
+  const [isPaymentLoading, setIsPaymentLoading] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [pendingCheckoutSessionId, setPendingCheckoutSessionId] = useState<string | null>(null);
 
   // Mock ride requests data - in real implementation, fetch from Supabase
   const [rideRequests, setRideRequests] = useState<RideRequest[]>([
@@ -255,7 +268,11 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
   };
 
   const handleConfirmRide = async () => {
-    setIsConfirmed(true);
+    const nextConfirmations = {
+      ...confirmations,
+      [userId]: true,
+    };
+    setConfirmations(nextConfirmations);
     setIsConfirmDialogOpen(false);
     
     // Save confirmation state to Supabase
@@ -267,7 +284,7 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
           'Authorization': `Bearer ${publicAnonKey}`,
         },
         body: JSON.stringify({
-          isConfirmed: true,
+          confirmations: nextConfirmations,
           baggageSize: baggageSize,
           pickupLocation: pickupLocation,
           pickupAddress: pickupAddress,
@@ -283,7 +300,7 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
       chatId,
       sender: "me",
       senderId: userId,
-      message: "✅ Ride confirmed! Looking forward to sharing the ride!",
+      message: "✅ I confirmed the ride. Waiting for you to confirm too!",
       timestamp: new Date(),
     };
     
@@ -335,8 +352,139 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
     await saveMessage(newMessage);
   };
 
+  const flowgladStorageKey = `flowgladCheckoutSession:${chatId}`;
+
+  const buildFlowgladReturnUrl = (result: "success" | "cancel") => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("flowgladResult", result);
+    return url.toString();
+  };
+
+  const clearFlowgladReturnParams = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("flowgladResult");
+    window.history.replaceState({}, "", url.toString());
+  };
+
+  const persistRideBookingInfo = async (nextInfo: RideBookingInfo) => {
+    setRideBookingInfo(nextInfo);
+    try {
+      await fetch(`${API_URL}/chat/${chatId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+        body: JSON.stringify({
+          rideBookingInfo: nextInfo,
+        }),
+      });
+    } catch (error) {
+      console.error("Error saving ride booking info:", error);
+    }
+  };
+
+  const verifyFlowgladCheckoutSession = async (checkoutSessionId: string) => {
+    if (!rideBookingInfo) return;
+
+    setIsPaymentLoading(true);
+    setPaymentError(null);
+
+    try {
+      const response = await fetch(`${API_URL}/flowglad/checkout-session/${checkoutSessionId}`, {
+        headers: {
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+      });
+      const data = await response.json();
+
+      if (!data.success || !data.checkoutSession) {
+        throw new Error("Unable to verify payment status.");
+      }
+
+      const status = data.checkoutSession.status;
+      const isPaid = ["complete", "paid", "succeeded"].includes(status);
+
+      if (isPaid && rideBookingInfo.paymentStatus !== "paid") {
+        const updatedInfo = {
+          ...rideBookingInfo,
+          paymentStatus: "paid" as const,
+          checkoutSessionId,
+        };
+        await persistRideBookingInfo(updatedInfo);
+
+        if (rideBookingInfo.bookedBy !== userId) {
+          const paymentMessage: ChatMessage = {
+            id: Date.now().toString(),
+            chatId,
+            sender: "me",
+            senderId: userId,
+            message: `✅ Payment of $${rideBookingInfo.splitAmount.toFixed(2)} sent successfully!`,
+            timestamp: new Date(),
+          };
+          saveMessage(paymentMessage);
+        }
+      } else if (!isPaid) {
+        setPaymentError("Payment is not completed yet. If you just paid, please refresh in a few seconds.");
+      }
+    } catch (error) {
+      console.error("Error verifying payment:", error);
+      setPaymentError("We couldn't confirm the payment. Please try again.");
+    } finally {
+      setIsPaymentLoading(false);
+      setPendingCheckoutSessionId(null);
+      localStorage.removeItem(flowgladStorageKey);
+    }
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("flowgladResult");
+    if (!result) return;
+
+    if (result === "success") {
+      const storedSessionId = localStorage.getItem(flowgladStorageKey);
+      if (storedSessionId) {
+        setPendingCheckoutSessionId(storedSessionId);
+      } else {
+        setPaymentError("We couldn't find the payment session. Please try again.");
+      }
+    }
+
+    if (result === "cancel") {
+      setPaymentError("Payment was canceled.");
+    }
+
+    clearFlowgladReturnParams();
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!pendingCheckoutSessionId || !rideBookingInfo) return;
+    if (rideBookingInfo.paymentStatus === "paid") {
+      setPendingCheckoutSessionId(null);
+      localStorage.removeItem(flowgladStorageKey);
+      return;
+    }
+    verifyFlowgladCheckoutSession(pendingCheckoutSessionId);
+  }, [pendingCheckoutSessionId, rideBookingInfo]);
+
   const handleCompleteRide = async () => {
     try {
+      await Promise.all([
+        fetch(`${API_URL}/ride-requests/${userId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+        }),
+        fetch(`${API_URL}/ride-requests/${match.id}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+        }),
+      ]);
+
       // Delete the chat from the backend
       const response = await fetch(`${API_URL}/chat/${chatId}`, {
         method: 'DELETE',
@@ -363,6 +511,21 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
 
   const handleCancelRide = async () => {
     try {
+      await Promise.all([
+        fetch(`${API_URL}/ride-requests/${userId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+        }),
+        fetch(`${API_URL}/ride-requests/${match.id}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+        }),
+      ]);
+
       // Delete the chat from the backend
       const response = await fetch(`${API_URL}/chat/${chatId}`, {
         method: 'DELETE',
@@ -407,19 +570,22 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
     }
 
     const totalAmount = parseFloat(rideAmount);
-    const splitAmount = totalAmount / 2;
+    const totalCents = Math.round(totalAmount * 100);
+    const splitCents = Math.floor(totalCents / 2);
+    const splitAmount = splitCents / 100;
 
     // In real implementation, upload receipt to storage and save to Supabase
     // For now, just simulate the booking
-    const bookingInfo = {
+    const bookingInfo: RideBookingInfo = {
       bookedBy: userId,
       totalAmount,
       splitAmount,
+      splitAmountCents: splitCents,
       receiptUrl: receiptPreview || "",
       paymentStatus: "pending" as const,
     };
 
-    setRideBookingInfo(bookingInfo);
+    await persistRideBookingInfo(bookingInfo);
     setIsRideBookedDialogOpen(false);
 
     // Add system message to chat
@@ -435,24 +601,53 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
   };
 
   const handlePayment = async () => {
-    // In real implementation, trigger Flowglad payment flow
-    // For now, just update the payment status
-    if (rideBookingInfo) {
-      setRideBookingInfo({
-        ...rideBookingInfo,
-        paymentStatus: "paid",
+    if (!rideBookingInfo) return;
+
+    setIsPaymentLoading(true);
+    setPaymentError(null);
+
+    try {
+      const quantity = Math.max(1, rideBookingInfo.splitAmountCents || Math.round(rideBookingInfo.splitAmount * 100));
+      const response = await fetch(`${API_URL}/flowglad/checkout-session`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+        body: JSON.stringify({
+          customerExternalId: userId,
+          quantity,
+          successUrl: buildFlowgladReturnUrl("success"),
+          cancelUrl: buildFlowgladReturnUrl("cancel"),
+          outputName: "Ride split payment",
+          outputMetadata: {
+            chatId,
+            bookedBy: rideBookingInfo.bookedBy,
+            totalAmount: rideBookingInfo.totalAmount,
+            splitAmount: rideBookingInfo.splitAmount,
+          },
+        }),
       });
 
-      // Add system message
-      const paymentMessage: ChatMessage = {
-        id: Date.now().toString(),
-        chatId,
-        sender: "me",
-        senderId: userId,
-        message: `✅ Payment of $${rideBookingInfo.splitAmount.toFixed(2)} sent successfully!`,
-        timestamp: new Date(),
+      const data = await response.json();
+      if (!data.success || !data.checkoutSession?.url || !data.checkoutSession?.id) {
+        throw new Error("Failed to create checkout session.");
+      }
+
+      const updatedInfo = {
+        ...rideBookingInfo,
+        checkoutSessionId: data.checkoutSession.id,
       };
-      saveMessage(paymentMessage);
+
+      localStorage.setItem(flowgladStorageKey, data.checkoutSession.id);
+      await persistRideBookingInfo(updatedInfo);
+
+      window.location.href = data.checkoutSession.url;
+    } catch (error) {
+      console.error("Error starting payment:", error);
+      setPaymentError("We couldn't start the payment. Please try again.");
+    } finally {
+      setIsPaymentLoading(false);
     }
   };
 
@@ -484,7 +679,7 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                 <div className="text-sm text-gray-500">{match.distance}</div>
               </div>
             </div>
-            {!isConfirmed && (
+            {!isCurrentUserConfirmed && (
               <Button 
                 onClick={() => setIsConfirmDialogOpen(true)}
                 className="bg-green-600 hover:bg-green-700"
@@ -494,7 +689,17 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                 Confirm
               </Button>
             )}
-            {isConfirmed && (
+            {isCurrentUserConfirmed && !isFullyConfirmed && (
+              <Button
+                disabled
+                className="bg-yellow-500 text-white shadow-inner cursor-default opacity-100"
+                size="sm"
+              >
+                <Clock className="w-4 h-4 mr-1" />
+                Waiting
+              </Button>
+            )}
+            {isFullyConfirmed && (
               <Button
                 disabled
                 className="bg-green-600 text-white shadow-inner cursor-default opacity-100"
@@ -562,7 +767,11 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                   placeholder="Type a message..."
                   className="flex-1"
                 />
-                <Button type="submit" className="hover:bg-opacity-90" style={{ backgroundColor: '#4a85c8' }}>
+                <Button
+                  type="submit"
+                  className="hover:bg-opacity-90"
+                  style={{ backgroundColor: '#4a85c8' }}
+                >
                   <Send className="w-4 h-4" />
                 </Button>
               </form>
@@ -575,7 +784,7 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
               <SharedPickupMap
                 suggestedLocation={pickupLocation}
                 onLocationChange={handleLocationChange}
-                isLocked={isConfirmed}
+                isLocked={isFullyConfirmed}
               />
             </div>
             <Card className="mt-4 p-4 border" style={{ backgroundColor: '#e8f1fa', borderColor: '#4a85c8' }}>
@@ -588,13 +797,13 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                   <div className="text-sm text-gray-600 mb-1">Current Pickup Point</div>
                   <div className="text-sm">{pickupAddress}</div>
                 </div>
-                {!isConfirmed && (
+                {!isFullyConfirmed && (
                   <div className="text-xs text-gray-600 bg-white rounded-lg p-3">
                     💡 This is the suggested meetup point based on both of your locations. 
                     Drag the pin on the map to adjust if needed. Changes will be visible to both of you.
                   </div>
                 )}
-                {isConfirmed && (
+                {isFullyConfirmed && (
                   <div className="text-xs text-green-600 bg-white rounded-lg p-3">
                     ✓ Location confirmed and locked. The pickup point is finalized.
                   </div>
@@ -700,7 +909,7 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
             </Card>
 
             {/* Confirm Button */}
-            {!isConfirmed && (
+            {!isCurrentUserConfirmed && (
               <Button 
                 className="w-full bg-green-600 hover:bg-green-700"
                 onClick={() => setIsConfirmDialogOpen(true)}
@@ -709,7 +918,16 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                 Confirm Ride Share
               </Button>
             )}
-            {isConfirmed && (
+            {isCurrentUserConfirmed && !isFullyConfirmed && (
+              <Button 
+                disabled
+                className="w-full bg-yellow-500 text-white shadow-inner cursor-default opacity-100"
+              >
+                <Clock className="w-4 h-4 mr-2" />
+                Waiting For {match.name.split(" ")[0]}
+              </Button>
+            )}
+            {isFullyConfirmed && (
               <Button 
                 disabled
                 className="w-full bg-green-600 text-white shadow-inner cursor-default opacity-100"
@@ -774,13 +992,23 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                   ) : (
                     <>
                       {rideBookingInfo.paymentStatus === "pending" ? (
-                        <Button 
-                          className="w-full bg-green-600 hover:bg-green-700"
-                          onClick={handlePayment}
-                        >
-                          <DollarSign className="w-4 h-4 mr-2" />
-                          Pay ${rideBookingInfo.splitAmount.toFixed(2)} via Flowglad
-                        </Button>
+                        <>
+                          <Button 
+                            className="w-full bg-green-600 hover:bg-green-700"
+                            onClick={handlePayment}
+                            disabled={isPaymentLoading}
+                          >
+                            <DollarSign className="w-4 h-4 mr-2" />
+                            {isPaymentLoading
+                              ? "Starting Flowglad checkout..."
+                              : `Pay $${rideBookingInfo.splitAmount.toFixed(2)} via Flowglad`}
+                          </Button>
+                          {paymentError && (
+                            <div className="mt-2 text-xs text-red-600 text-center">
+                              {paymentError}
+                            </div>
+                          )}
+                        </>
                       ) : (
                         <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700 text-center">
                           ✅ Payment sent successfully!
