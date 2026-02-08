@@ -57,6 +57,9 @@
   - Snowflake analytics Q&A
   - Gemini chat widget for general assistance
 
+  ## Frameworks/Wireframes
+  - Figma Design: https://www.figma.com/proto/cVK71jm3o7DEKYYXj7YAm4/SynC-Framework?node-id=1-2&t=KaLHHiMNEwsogYon-1 --> link to prototype
+
   ## Running the code
 
   Run `npm i` to install the dependencies.
