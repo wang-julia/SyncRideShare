@@ -1,6 +1,7 @@
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { ArrowLeft, Home } from "lucide-react";
+import { useState } from "react";
 import logo from "@/assets/7107bd02e613dd856c16fb749845e9f675c7d7ba.png";
 
 interface DestinationSelectionProps {
@@ -18,6 +19,7 @@ const AIRPORTS = [
 ];
 
 export function DestinationSelection({ onSelectAirport, onBack, onHome }: DestinationSelectionProps) {
+  const [logoFailed, setLogoFailed] = useState(false);
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="max-w-md mx-auto pt-8">
@@ -45,7 +47,17 @@ export function DestinationSelection({ onSelectAirport, onBack, onHome }: Destin
         </div>
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center mb-4">
-            <img src={logo} alt="Logo" className="h-32" />
+            {!logoFailed ? (
+              <img
+                src={logo}
+                alt="Logo"
+                className="h-32"
+                loading="eager"
+                onError={() => setLogoFailed(true)}
+              />
+            ) : (
+              <div className="text-2xl font-bold text-[#4a85c8]">Sync</div>
+            )}
           </div>
           <p className="text-gray-600">Find students to share your ride</p>
         </div>

@@ -7,6 +7,128 @@ const app = new Hono();
 const FLOWGLAD_API_BASE = "https://app.flowglad.com/api/v1";
 const FLOWGLAD_PRICE_SLUG = Deno.env.get("FLOWGLAD_RIDE_SPLIT_PRICE_SLUG") ?? "";
 const FLOWGLAD_ORG_ID = Deno.env.get("FLOWGLAD_ORGANIZATION_ID") ?? "";
+const SNOWFLAKE_ACCOUNT = Deno.env.get("SNOWFLAKE_ACCOUNT") ?? "";
+const SNOWFLAKE_HOST = Deno.env.get("SNOWFLAKE_HOST") ?? (SNOWFLAKE_ACCOUNT ? `${SNOWFLAKE_ACCOUNT}.snowflakecomputing.com` : "");
+const SNOWFLAKE_OAUTH_TOKEN = Deno.env.get("SNOWFLAKE_OAUTH_TOKEN") ?? "";
+const SNOWFLAKE_WAREHOUSE = (Deno.env.get("SNOWFLAKE_WAREHOUSE") ?? "COMPUTE_WH").trim();
+const SNOWFLAKE_DATABASE = Deno.env.get("SNOWFLAKE_DATABASE") ?? "";
+const SNOWFLAKE_SCHEMA = Deno.env.get("SNOWFLAKE_SCHEMA") ?? "";
+const SNOWFLAKE_ROLE = Deno.env.get("SNOWFLAKE_ROLE") ?? "";
+const SNOWFLAKE_ANALYTICS_TABLE = Deno.env.get("SNOWFLAKE_ANALYTICS_TABLE") ?? "RIDE_ANALYTICS";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.0-flash";
+
+const escapeSqlLiteral = (value: string) => value.replace(/'/g, "''");
+
+const getDayOfWeek = (date: Date) => {
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return days[date.getDay()];
+};
+
+const snowflakeQuery = async (statement: string) => {
+  if (!SNOWFLAKE_HOST || !SNOWFLAKE_OAUTH_TOKEN) {
+    throw new Error("Snowflake connection not configured");
+  }
+
+  const url = `https://${SNOWFLAKE_HOST}/api/v2/statements`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${SNOWFLAKE_OAUTH_TOKEN}`,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
+    body: JSON.stringify({
+      statement,
+      timeout: 60,
+      warehouse: SNOWFLAKE_WAREHOUSE || undefined,
+      database: SNOWFLAKE_DATABASE || undefined,
+      schema: SNOWFLAKE_SCHEMA || undefined,
+      role: SNOWFLAKE_ROLE || undefined,
+    }),
+  });
+
+  const rawText = await response.text();
+  let payload: any = null;
+  try {
+    payload = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const errorMessage = payload?.message || payload?.data?.error || payload?.error || rawText || "Snowflake query failed";
+    throw new Error(`Snowflake ${response.status}: ${errorMessage}`);
+  }
+  if (!payload) {
+    throw new Error("Snowflake returned a non-JSON response");
+  }
+  return payload;
+};
+
+const rowsToObjects = (payload: any) => {
+  const columns = payload?.resultSetMetaData?.rowType || payload?.columns || [];
+  const rows = payload?.data || [];
+  if (!columns.length || !rows.length) return [];
+  return rows.map((row: any[]) => {
+    const obj: Record<string, any> = {};
+    columns.forEach((col: any, idx: number) => {
+      const name = col.name || col?.columnName || `col_${idx}`;
+      obj[name.toLowerCase()] = row[idx];
+    });
+    return obj;
+  });
+};
+
+const runCortex = async (prompt: string) => {
+  const statement = `SELECT SNOWFLAKE.CORTEX.COMPLETE('gpt-4o-mini', $$${prompt}$$) AS response`;
+  const payload = await snowflakeQuery(statement);
+  const rows = rowsToObjects(payload);
+  return rows[0]?.response || "";
+};
+
+const callGemini = async (question: string, conversation: Array<{ role: string; text: string }>) => {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Gemini API key not configured");
+  }
+
+  const convoText = conversation
+    .slice(-6)
+    .map((msg) => `${msg.role}: ${msg.text}`)
+    .join("\n");
+
+  const userPrompt = [
+    "You are a helpful travel and rideshare assistant.",
+    "Answer the user's question directly and concisely.",
+    "Conversation:",
+    convoText,
+    "",
+    `Question: ${question}`,
+  ].join("\n");
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      }),
+    },
+  );
+
+  const payload = await response.json();
+  if (!response.ok) {
+    const errorMessage = payload?.error?.message || payload?.error?.status || "Gemini request failed";
+    throw new Error(errorMessage);
+  }
+
+  const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return text || "No answer available.";
+};
 
 // Enable logger
 app.use('*', logger(console.log));
@@ -200,6 +322,229 @@ app.get("/make-server-c63c7d45/messages/:chatId", async (c) => {
   }
 });
 
+// AI analytics endpoints (Snowflake Cortex)
+app.get("/make-server-c63c7d45/ai/health", (c) => {
+  return c.json({
+    success: true,
+    config: {
+      host: SNOWFLAKE_HOST,
+      database: SNOWFLAKE_DATABASE,
+      schema: SNOWFLAKE_SCHEMA,
+      table: SNOWFLAKE_ANALYTICS_TABLE,
+      role: SNOWFLAKE_ROLE,
+      warehouse: SNOWFLAKE_WAREHOUSE,
+    },
+  });
+});
+
+app.post("/make-server-c63c7d45/ai/optimizer", async (c) => {
+  try {
+    const { airport, pickupArea, pickupTime } = await c.req.json();
+    if (!airport || !pickupTime) {
+      return c.json({ success: false, error: "Missing airport or pickupTime" }, 400);
+    }
+
+    const pickupDate = new Date(pickupTime);
+    if (Number.isNaN(pickupDate.getTime())) {
+      return c.json({ success: false, error: "Invalid pickupTime" }, 400);
+    }
+
+    const dayOfWeek = getDayOfWeek(pickupDate);
+    const hour = pickupDate.getHours();
+    const airportSafe = escapeSqlLiteral(String(airport));
+    const areaSafe = pickupArea ? escapeSqlLiteral(String(pickupArea)) : "";
+
+    const areaFilter = areaSafe ? ` AND pickup_area = '${areaSafe}'` : "";
+    const statement = `
+      SELECT hour, AVG(success_rate) AS success_rate, SUM(ride_count) AS ride_count
+      FROM ${SNOWFLAKE_ANALYTICS_TABLE}
+      WHERE airport = '${airportSafe}'
+        AND day_of_week = '${dayOfWeek}'
+        ${areaFilter}
+      GROUP BY hour
+      ORDER BY hour
+    `;
+
+    const payload = await snowflakeQuery(statement);
+    const rows = rowsToObjects(payload);
+    if (!rows.length) {
+      return c.json({ success: false, error: "No analytics data found" }, 404);
+    }
+
+    const byHour = new Map<number, { success_rate: number; ride_count: number }>();
+    rows.forEach((row: any) => {
+      byHour.set(Number(row.hour), {
+        success_rate: Number(row.success_rate || 0),
+        ride_count: Number(row.ride_count || 0),
+      });
+    });
+
+    const baseline = byHour.get(hour) || { success_rate: 0, ride_count: 0 };
+    const candidates = [hour - 1, hour, hour + 1].filter((h) => h >= 0 && h <= 23);
+    let bestHour = hour;
+    let bestRate = baseline.success_rate;
+    candidates.forEach((h) => {
+      const rate = byHour.get(h)?.success_rate ?? 0;
+      if (rate > bestRate) {
+        bestRate = rate;
+        bestHour = h;
+      }
+    });
+
+    const delta = baseline.success_rate > 0
+      ? Math.round(((bestRate - baseline.success_rate) / baseline.success_rate) * 100)
+      : 0;
+    const minuteShift = Math.abs(bestHour - hour) * 60;
+    const shiftLabel = minuteShift === 0 ? "right around now" : `${minuteShift} minutes ${bestHour > hour ? "later" : "earlier"}`;
+
+    const summary = bestHour === hour
+      ? `You're already near the best window. Staying around ${hour}:00 yields the highest match chance.`
+      : `Leaving about ${shiftLabel} increases your match chances by ~${Math.abs(delta)}%.`;
+
+    let aiText = "";
+    try {
+      const prompt = [
+        "You are a ride-sharing analytics assistant. Respond in 2-3 concise sentences.",
+        "Use only the provided stats.",
+        `Airport: ${airportSafe}`,
+        `Pickup area: ${pickupArea || "any"}`,
+        `Day: ${dayOfWeek}`,
+        `Requested hour: ${hour}`,
+        `Baseline success rate: ${baseline.success_rate}`,
+        `Best hour: ${bestHour}`,
+        `Best success rate: ${bestRate}`,
+        `Computed delta: ${delta}%`,
+        `Summary: ${summary}`,
+      ].join("\n");
+      aiText = await runCortex(prompt);
+    } catch (error) {
+      console.log("Cortex error:", error);
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        dayOfWeek,
+        hour,
+        bestHour,
+        baselineSuccessRate: baseline.success_rate,
+        bestSuccessRate: bestRate,
+        deltaPercent: delta,
+        summary,
+        aiText: aiText || summary,
+      },
+    });
+  } catch (error) {
+    console.log("Error running optimizer:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
+app.post("/make-server-c63c7d45/ai/ask", async (c) => {
+  try {
+    const { question, airport, pickupArea } = await c.req.json();
+    if (!question || typeof question !== "string") {
+      return c.json({ success: false, error: "Missing question" }, 400);
+    }
+
+    const q = question.toLowerCase();
+    const airportSafe = airport ? escapeSqlLiteral(String(airport)) : "";
+    const areaSafe = pickupArea ? escapeSqlLiteral(String(pickupArea)) : "";
+    const areaFilter = areaSafe ? ` AND pickup_area = '${areaSafe}'` : "";
+    const airportFilter = airportSafe ? ` AND airport = '${airportSafe}'` : "";
+
+    let stats: any = {};
+    if (q.includes("busiest")) {
+      const statement = `
+        SELECT day_of_week, hour, SUM(ride_count) AS ride_count
+        FROM ${SNOWFLAKE_ANALYTICS_TABLE}
+        WHERE 1=1 ${airportFilter} ${areaFilter}
+        GROUP BY day_of_week, hour
+        ORDER BY ride_count DESC
+        LIMIT 1
+      `;
+      const payload = await snowflakeQuery(statement);
+      stats = rowsToObjects(payload)[0] || {};
+    } else if (q.includes("where do most rides go") || q.includes("most rides go")) {
+      const statement = `
+        SELECT airport, SUM(ride_count) AS ride_count
+        FROM ${SNOWFLAKE_ANALYTICS_TABLE}
+        WHERE 1=1 ${areaFilter}
+        GROUP BY airport
+        ORDER BY ride_count DESC
+        LIMIT 3
+      `;
+      const payload = await snowflakeQuery(statement);
+      stats = rowsToObjects(payload);
+    } else if (q.includes("how likely") || q.includes("match")) {
+      const timeMatch = q.match(/(\d{1,2})\s*(am|pm)/);
+      const hour = timeMatch
+        ? (Number(timeMatch[1]) % 12) + (timeMatch[2] === "pm" ? 12 : 0)
+        : new Date().getHours();
+      const statement = `
+        SELECT day_of_week, hour, AVG(success_rate) AS success_rate
+        FROM ${SNOWFLAKE_ANALYTICS_TABLE}
+        WHERE hour = ${hour} ${airportFilter} ${areaFilter}
+        GROUP BY day_of_week, hour
+        ORDER BY success_rate DESC
+        LIMIT 1
+      `;
+      const payload = await snowflakeQuery(statement);
+      stats = rowsToObjects(payload)[0] || {};
+    } else {
+      const statement = `
+        SELECT hour, AVG(success_rate) AS success_rate, SUM(ride_count) AS ride_count
+        FROM ${SNOWFLAKE_ANALYTICS_TABLE}
+        WHERE 1=1 ${airportFilter} ${areaFilter}
+        GROUP BY hour
+        ORDER BY ride_count DESC
+        LIMIT 3
+      `;
+      const payload = await snowflakeQuery(statement);
+      stats = rowsToObjects(payload);
+    }
+
+    let answer = "";
+    try {
+      const prompt = [
+        "You are an analytics assistant. Answer the question using ONLY the provided stats.",
+        `Question: ${question}`,
+        `Stats: ${JSON.stringify(stats)}`,
+      ].join("\n");
+      answer = await runCortex(prompt);
+    } catch (error) {
+      console.log("Cortex error:", error);
+    }
+
+    return c.json({ success: true, data: { answer: answer || "No answer available.", stats } });
+  } catch (error) {
+    console.log("Error running AI assistant:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
+app.post("/make-server-c63c7d45/gemini/chat", async (c) => {
+  try {
+    const { question, messages } = await c.req.json();
+    if (!question || typeof question !== "string") {
+      return c.json({ success: false, error: "Missing question" }, 400);
+    }
+
+    const conversation = Array.isArray(messages)
+      ? messages.map((msg) => ({
+          role: msg.role === "assistant" ? "assistant" : "user",
+          text: String(msg.text || ""),
+        }))
+      : [];
+
+    const answer = await callGemini(question, conversation);
+    return c.json({ success: true, data: { answer } });
+  } catch (error) {
+    console.log("Error running Gemini chat:", error);
+    return c.json({ success: false, error: String(error) }, 500);
+  }
+});
+
 // Flowglad checkout session endpoints
 app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
   try {
@@ -218,9 +563,10 @@ app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
       outputMetadata,
       outputName,
       priceSlug,
+      anonymous,
     } = await c.req.json();
 
-    if (!customerExternalId || !successUrl || !cancelUrl || !quantity || quantity <= 0) {
+    if ((!anonymous && !customerExternalId) || !successUrl || !cancelUrl || !quantity || quantity <= 0) {
       return c.json({ success: false, error: "Missing required checkout session fields" }, 400);
     }
 
@@ -230,13 +576,57 @@ app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
       return c.json({ success: false, error: "Flowglad price not configured" }, 500);
     }
 
+    if (anonymous) {
+      const response = await fetch(`${FLOWGLAD_API_BASE}/checkout-sessions`, {
+        method: "POST",
+        headers: {
+          "Authorization": flowgladKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          checkoutSession: {
+            anonymous: true,
+            successUrl,
+            cancelUrl,
+            type: "product",
+            outputMetadata: outputMetadata ?? {},
+            outputName,
+            ...(effectivePriceId ? { priceId: effectivePriceId } : { priceSlug: effectivePriceSlug }),
+            quantity,
+          },
+        }),
+      });
+
+      const rawText = await response.text();
+      let data: any = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = { error: rawText };
+      }
+
+      if (!response.ok) {
+        console.log("Flowglad anonymous checkout error:", data);
+        return c.json({ success: false, error: data }, response.status);
+      }
+
+      return c.json({
+        success: true,
+        ...data,
+        checkoutSession: {
+          ...(data?.checkoutSession ?? {}),
+          url: data?.url,
+        },
+      });
+    }
+
     const rawExternalId = String(customerExternalId);
     const customerKey = `flowglad_customer_${FLOWGLAD_ORG_ID || "default"}_${rawExternalId}`;
-    const createCustomer = async (id: string) => {
+    const createCustomer = async (id: string, organizationId?: string) => {
       return fetch(`${FLOWGLAD_API_BASE}/customers`, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${flowgladKey}`,
+          "Authorization": flowgladKey,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -244,72 +634,85 @@ app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
             externalId: id,
             email: customerEmail ?? "",
             name: customerName ?? "",
-            organizationId: FLOWGLAD_ORG_ID || undefined,
+            organizationId,
           },
         }),
       });
     };
 
-    let externalId = FLOWGLAD_ORG_ID
-      ? `${FLOWGLAD_ORG_ID}:${rawExternalId}:${crypto.randomUUID()}`
-      : `${rawExternalId}:${crypto.randomUUID()}`;
+    const buildExternalId = (prefix?: string) =>
+      prefix ? `${prefix}:${rawExternalId}:${crypto.randomUUID()}` : `${rawExternalId}:${crypto.randomUUID()}`;
 
-    let createResponse = await createCustomer(externalId);
-    if (createResponse.status === 403) {
-      externalId = FLOWGLAD_ORG_ID
-        ? `${FLOWGLAD_ORG_ID}:${rawExternalId}:${crypto.randomUUID()}`
-        : `${rawExternalId}:${crypto.randomUUID()}`;
-      createResponse = await createCustomer(externalId);
-    }
-
-    if (!createResponse.ok) {
-      const rawText = await createResponse.text();
-      let data: any = null;
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        data = { error: rawText };
-      }
-      return c.json({ success: false, error: data }, createResponse.status);
-    }
-
-    await kv.set(customerKey, externalId);
-
-    const response = await fetch(`${FLOWGLAD_API_BASE}/checkout-sessions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${flowgladKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        checkoutSession: {
-          customerExternalId: externalId,
-          ...(FLOWGLAD_ORG_ID ? { organizationId: FLOWGLAD_ORG_ID } : {}),
-          successUrl,
-          cancelUrl,
-          type: "product",
-          outputMetadata: outputMetadata ?? {},
-          outputName,
-          ...(effectivePriceId ? { priceId: effectivePriceId } : { priceSlug: effectivePriceSlug }),
-          quantity,
+    const createCheckout = async (externalId: string, organizationId?: string) => {
+      return fetch(`${FLOWGLAD_API_BASE}/checkout-sessions`, {
+        method: "POST",
+        headers: {
+          "Authorization": flowgladKey,
+          "Content-Type": "application/json",
         },
-      }),
+        body: JSON.stringify({
+          checkoutSession: {
+            customerExternalId: externalId,
+            ...(organizationId ? { organizationId } : {}),
+            successUrl,
+            cancelUrl,
+            type: "product",
+            outputMetadata: outputMetadata ?? {},
+            outputName,
+            ...(effectivePriceId ? { priceId: effectivePriceId } : { priceSlug: effectivePriceSlug }),
+            quantity,
+          },
+        }),
+      });
+    };
+
+    const tryCreateAndCheckout = async (organizationId?: string) => {
+      const externalId = buildExternalId(organizationId);
+      const createResponse = await createCustomer(externalId, organizationId);
+      if (!createResponse.ok) {
+        const rawText = await createResponse.text();
+        let data: any = null;
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch {
+          data = { error: rawText };
+        }
+        return { ok: false, status: createResponse.status, data };
+      }
+      await kv.set(customerKey, externalId);
+      const checkoutResponse = await createCheckout(externalId, organizationId);
+      const checkoutRaw = await checkoutResponse.text();
+      let checkoutData: any = null;
+      try {
+        checkoutData = checkoutRaw ? JSON.parse(checkoutRaw) : {};
+      } catch {
+        checkoutData = { error: checkoutRaw };
+      }
+      return {
+        ok: checkoutResponse.ok,
+        status: checkoutResponse.status,
+        data: checkoutData,
+      };
+    };
+
+    let attempt = await tryCreateAndCheckout(FLOWGLAD_ORG_ID || undefined);
+    if (!attempt.ok && attempt.status === 403 && FLOWGLAD_ORG_ID) {
+      attempt = await tryCreateAndCheckout(undefined);
+    }
+
+    if (!attempt.ok) {
+      console.log("Flowglad checkout session error:", attempt.data);
+      return c.json({ success: false, error: attempt.data }, attempt.status);
+    }
+
+    return c.json({
+      success: true,
+      ...attempt.data,
+      checkoutSession: {
+        ...(attempt.data?.checkoutSession ?? {}),
+        url: attempt.data?.url,
+      },
     });
-
-    const rawText = await response.text();
-    let data: any = null;
-    try {
-      data = rawText ? JSON.parse(rawText) : {};
-    } catch {
-      data = { error: rawText };
-    }
-
-    if (!response.ok) {
-      console.log("Flowglad checkout session error:", data);
-      return c.json({ success: false, error: data }, response.status);
-    }
-
-    return c.json({ success: true, ...data });
   } catch (error) {
     console.log("Error creating Flowglad checkout session:", error);
     return c.json({ success: false, error: String(error) }, 500);
@@ -326,7 +729,7 @@ app.get("/make-server-c63c7d45/flowglad/checkout-session/:id", async (c) => {
     const id = c.req.param("id");
     const response = await fetch(`${FLOWGLAD_API_BASE}/checkout-sessions/${id}`, {
       headers: {
-        "Authorization": `Bearer ${flowgladKey}`,
+        "Authorization": flowgladKey,
       },
     });
 

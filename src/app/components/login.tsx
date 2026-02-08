@@ -16,6 +16,7 @@ export function Login({ onLogin, onBack }: LoginProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,7 +54,17 @@ export function Login({ onLogin, onBack }: LoginProps) {
         <Card className="p-6">
           <div className="text-center mb-6">
             <div className="inline-flex items-center justify-center mb-4">
-              <img src={logo} alt="Logo" className="h-56" />
+              {!logoFailed ? (
+                <img
+                  src={logo}
+                  alt="Logo"
+                  className="h-56"
+                  loading="eager"
+                  onError={() => setLogoFailed(true)}
+                />
+              ) : (
+                <div className="text-3xl font-bold text-[#4a85c8]">Sync</div>
+              )}
             </div>
             <h2 className="text-2xl mb-2">Welcome Back</h2>
             <p className="text-gray-600">Log in to your account</p>

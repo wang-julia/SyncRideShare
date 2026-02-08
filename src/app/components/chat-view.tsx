@@ -1009,6 +1009,9 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
                               ? "Starting Flowglad checkout..."
                               : `Pay $${rideBookingInfo.splitAmount.toFixed(2)} via Flowglad`}
                           </Button>
+                          <div className="mt-2 text-[11px] text-gray-500 text-center">
+                            Test card: 4242 4242 4242 4242 · any future exp · any 3-digit CVC
+                          </div>
                           {paymentError && (
                             <div className="mt-2 text-xs text-red-600 text-center">
                               {paymentError}

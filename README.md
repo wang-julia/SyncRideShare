@@ -22,4 +22,28 @@
   - Use that price's slug for `FLOWGLAD_RIDE_SPLIT_PRICE_SLUG`.
   - If slug resolution fails, set `FLOWGLAD_RIDE_SPLIT_PRICE_ID` and redeploy.
   - The app sets the checkout quantity to the split amount in cents so any ride total can be charged accurately.
+
+  Test checkout:
+  - Card number: 4242 4242 4242 4242
+  - Expiration: any future date
+  - CVC: any 3-digit number
+
+  ## Snowflake AI Setup (Cortex)
+
+  Configure these environment variables for the Supabase Edge Function:
+
+  - `SNOWFLAKE_HOST`: Your Snowflake host, e.g. `xyz12345.snowflakecomputing.com`
+  - `SNOWFLAKE_OAUTH_TOKEN`: OAuth token with access to SQL API + Cortex
+  - `SNOWFLAKE_WAREHOUSE`: Warehouse to run queries
+  - `SNOWFLAKE_DATABASE`: Database name
+  - `SNOWFLAKE_SCHEMA`: Schema name
+  - `SNOWFLAKE_ROLE`: Role with read access + Cortex
+  - `SNOWFLAKE_ANALYTICS_TABLE`: Table name (default `RIDE_ANALYTICS`)
+
+  ## Gemini Chat Setup
+
+  Configure these environment variables for the Supabase Edge Function:
+
+  - `GEMINI_API_KEY`: Your Gemini API key
+  - `GEMINI_MODEL`: (Optional) Gemini model name (default `gemini-2.0-flash`)
   

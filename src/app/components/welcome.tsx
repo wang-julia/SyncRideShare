@@ -1,6 +1,7 @@
 import { Button } from "@/app/components/ui/button";
 import { Card } from "@/app/components/ui/card";
 import { Users, MapPin, MessageCircle } from "lucide-react";
+import { useState } from "react";
 import logo from "@/assets/7107bd02e613dd856c16fb749845e9f675c7d7ba.png";
 
 interface WelcomeProps {
@@ -9,12 +10,23 @@ interface WelcomeProps {
 }
 
 export function Welcome({ onLogin, onSignup }: WelcomeProps) {
+  const [logoFailed, setLogoFailed] = useState(false);
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center mb-4">
-            <img src={logo} alt="Logo" className="h-64" />
+            {!logoFailed ? (
+              <img
+                src={logo}
+                alt="Logo"
+                className="h-64"
+                loading="eager"
+                onError={() => setLogoFailed(true)}
+              />
+            ) : (
+              <div className="text-4xl font-bold text-[#4a85c8]">Sync</div>
+            )}
           </div>
           <p className="text-gray-600 text-lg">Share rides to NYC airports and stations with fellow Columbia students</p>
         </div>
