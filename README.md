@@ -1,7 +1,48 @@
 
-  # Student Ride Sharing App
+  # Sync Ride Share
 
-  This is a code bundle for Student Ride Sharing App. The original project is available at https://www.figma.com/design/iE5GzernAmwrlHSRjswtNZ/Student-Ride-Sharing-App.
+  Sync Ride Share is a student-first carpooling app that matches riders headed to the same airport or station, lets them coordinate in chat, and split fares. Users submit ride details, browse matches, confirm rides, and pay their share via Flowglad. The app also includes Snowflake-powered analytics insights and a Gemini chat helper.
+
+  Original design inspiration: https://www.figma.com/design/iE5GzernAmwrlHSRjswtNZ/Student-Ride-Sharing-App.
+
+  ## Tech Stack
+
+  - Frontend: React + Vite + TypeScript
+  - UI: Tailwind CSS + shadcn/ui + Lucide icons
+  - Auth & storage: Supabase (Auth + Edge Functions)
+  - Payments: Flowglad (checkout + ride split payments)
+  - Analytics: Snowflake (Cortex + SQL API)
+  - AI assistant: Gemini
+
+  ## System Architecture
+
+  - Client (Vite + React) handles UI, authentication, ride creation, matching, chat, and checkout initiation.
+  - Supabase Auth manages user sessions.
+  - Supabase Edge Function (`make-server-c63c7d45`) acts as the backend API for:
+    - Profiles, chats, and ride requests (KV store)
+    - Flowglad checkout session creation and status verification
+    - Snowflake analytics endpoints (optimizer + Q&A)
+    - Gemini chat endpoint
+  - Flowglad processes checkout and returns a hosted payment URL.
+  - Snowflake stores ride analytics and powers optimizer/insights.
+
+  ## Feature Checklist
+
+  - Account creation and login (Supabase Auth)
+  - Profile creation with Columbia email validation
+  - Destination selection for airports and stations
+  - Ride request creation with pickup time and preferences
+  - Match discovery based on destination and time
+  - Public ride request cards for matching users
+  - Chat between matched riders with persistent history
+  - Last message preview and unread count
+  - Ride confirmation flow
+  - Ride cancel/complete workflows
+  - Ride split payments via Flowglad checkout
+  - Payment receipt capture and status tracking
+  - Snowflake Ride AI optimizer (match chance insights)
+  - Snowflake analytics Q&A
+  - Gemini chat widget for general assistance
 
   ## Running the code
 
