@@ -326,7 +326,7 @@ export function ChatList({
               </Button>
             </Card>
           ) : (
-            chats.map((chat) => (
+            Array.from(new Map(chats.map(chat => [chat.id, chat])).values()).map((chat) => (
               <Card
                 key={chat.id}
                 className="p-4 cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02] border-l-4"

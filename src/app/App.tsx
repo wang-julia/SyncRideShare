@@ -331,7 +331,24 @@ export default function App() {
             });
             const serverIds = new Set(enrichedChats.map(chat => chat.id));
             merged.push(...prevChats.filter(chat => !serverIds.has(chat.id)));
-            return merged;
+
+            const deduped = new Map<string, Chat>();
+            for (const chat of merged) {
+              const existing = deduped.get(chat.id);
+              if (!existing) {
+                deduped.set(chat.id, chat);
+                continue;
+              }
+              const existingTime = existing.lastMessageTime?.getTime?.() ?? 0;
+              const chatTime = chat.lastMessageTime?.getTime?.() ?? 0;
+              if (chatTime > existingTime) {
+                deduped.set(chat.id, chat);
+              }
+            }
+
+            const result = Array.from(deduped.values());
+            result.sort((a, b) => b.lastMessageTime.getTime() - a.lastMessageTime.getTime());
+            return result;
           });
         } else {
           // No chats found from server; keep existing local chats

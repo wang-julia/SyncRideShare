@@ -15,9 +15,11 @@
 
   - `FLOWGLAD_SECRET_KEY`: Your Flowglad API key (server-side secret).
   - `FLOWGLAD_RIDE_SPLIT_PRICE_SLUG`: Price slug for a "Ride Split" product.
+  - `FLOWGLAD_RIDE_SPLIT_PRICE_ID`: (Optional) Price ID to use instead of slug.
 
   Recommended setup:
   - Create a one-time product in Flowglad priced at $0.01 (1 cent).
   - Use that price's slug for `FLOWGLAD_RIDE_SPLIT_PRICE_SLUG`.
+  - If slug resolution fails, set `FLOWGLAD_RIDE_SPLIT_PRICE_ID` and redeploy.
   - The app sets the checkout quantity to the split amount in cents so any ride total can be charged accurately.
   

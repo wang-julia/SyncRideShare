@@ -62,6 +62,8 @@ interface ChatViewProps {
   chatId: string;
   userId: string;
   userProfile: {
+    name?: string;
+    email?: string;
     phoneNumber: string;
   };
   onBack: () => void;
@@ -615,7 +617,9 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
           'Authorization': `Bearer ${publicAnonKey}`,
         },
         body: JSON.stringify({
-          customerExternalId: userId,
+          customerExternalId: userProfile.email || userId,
+          customerName: userProfile.name || "",
+          customerEmail: userProfile.email || "",
           quantity,
           successUrl: buildFlowgladReturnUrl("success"),
           cancelUrl: buildFlowgladReturnUrl("cancel"),
@@ -631,7 +635,9 @@ export function ChatView({ match, chatId, userId, userProfile, onBack, onHome, o
 
       const data = await response.json();
       if (!data.success || !data.checkoutSession?.url || !data.checkoutSession?.id) {
-        throw new Error("Failed to create checkout session.");
+        const rawError = data?.error?.message || data?.error || "Failed to create checkout session.";
+        const errorMessage = typeof rawError === "string" ? rawError : JSON.stringify(rawError);
+        throw new Error(errorMessage);
       }
 
       const updatedInfo = {

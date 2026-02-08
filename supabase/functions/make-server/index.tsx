@@ -6,6 +6,7 @@ import * as kv from "./kv_store.tsx";
 const app = new Hono();
 const FLOWGLAD_API_BASE = "https://app.flowglad.com/api/v1";
 const FLOWGLAD_PRICE_SLUG = Deno.env.get("FLOWGLAD_RIDE_SPLIT_PRICE_SLUG") ?? "";
+const FLOWGLAD_ORG_ID = Deno.env.get("FLOWGLAD_ORGANIZATION_ID") ?? "";
 
 // Enable logger
 app.use('*', logger(console.log));
@@ -209,6 +210,8 @@ app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
 
     const {
       customerExternalId,
+      customerEmail,
+      customerName,
       quantity,
       successUrl,
       cancelUrl,
@@ -222,9 +225,55 @@ app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
     }
 
     const effectivePriceSlug = priceSlug || FLOWGLAD_PRICE_SLUG;
-    if (!effectivePriceSlug) {
-      return c.json({ success: false, error: "Flowglad price slug not configured" }, 500);
+    const effectivePriceId = Deno.env.get("FLOWGLAD_RIDE_SPLIT_PRICE_ID") ?? "";
+    if (!effectivePriceSlug && !effectivePriceId) {
+      return c.json({ success: false, error: "Flowglad price not configured" }, 500);
     }
+
+    const rawExternalId = String(customerExternalId);
+    const customerKey = `flowglad_customer_${FLOWGLAD_ORG_ID || "default"}_${rawExternalId}`;
+    const createCustomer = async (id: string) => {
+      return fetch(`${FLOWGLAD_API_BASE}/customers`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${flowgladKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          customer: {
+            externalId: id,
+            email: customerEmail ?? "",
+            name: customerName ?? "",
+            organizationId: FLOWGLAD_ORG_ID || undefined,
+          },
+        }),
+      });
+    };
+
+    let externalId = FLOWGLAD_ORG_ID
+      ? `${FLOWGLAD_ORG_ID}:${rawExternalId}:${crypto.randomUUID()}`
+      : `${rawExternalId}:${crypto.randomUUID()}`;
+
+    let createResponse = await createCustomer(externalId);
+    if (createResponse.status === 403) {
+      externalId = FLOWGLAD_ORG_ID
+        ? `${FLOWGLAD_ORG_ID}:${rawExternalId}:${crypto.randomUUID()}`
+        : `${rawExternalId}:${crypto.randomUUID()}`;
+      createResponse = await createCustomer(externalId);
+    }
+
+    if (!createResponse.ok) {
+      const rawText = await createResponse.text();
+      let data: any = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = { error: rawText };
+      }
+      return c.json({ success: false, error: data }, createResponse.status);
+    }
+
+    await kv.set(customerKey, externalId);
 
     const response = await fetch(`${FLOWGLAD_API_BASE}/checkout-sessions`, {
       method: "POST",
@@ -234,19 +283,27 @@ app.post("/make-server-c63c7d45/flowglad/checkout-session", async (c) => {
       },
       body: JSON.stringify({
         checkoutSession: {
-          customerExternalId,
+          customerExternalId: externalId,
+          ...(FLOWGLAD_ORG_ID ? { organizationId: FLOWGLAD_ORG_ID } : {}),
           successUrl,
           cancelUrl,
           type: "product",
           outputMetadata: outputMetadata ?? {},
           outputName,
-          priceSlug: effectivePriceSlug,
+          ...(effectivePriceId ? { priceId: effectivePriceId } : { priceSlug: effectivePriceSlug }),
           quantity,
         },
       }),
     });
 
-    const data = await response.json();
+    const rawText = await response.text();
+    let data: any = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      data = { error: rawText };
+    }
+
     if (!response.ok) {
       console.log("Flowglad checkout session error:", data);
       return c.json({ success: false, error: data }, response.status);
