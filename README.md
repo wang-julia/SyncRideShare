@@ -26,6 +26,19 @@
   - Flowglad processes checkout and returns a hosted payment URL.
   - Snowflake stores ride analytics and powers optimizer/insights.
 
+  ```mermaid
+  flowchart LR
+    A[Client: Vite + React] -->|Auth| B[Supabase Auth]
+    A -->|API calls| C[Supabase Edge Function<br/>make-server-c63c7d45]
+    C -->|Profiles / Chats / Ride Requests| D[Supabase KV Store]
+    C -->|Checkout Sessions| E[Flowglad]
+    E -->|Hosted Checkout URL| A
+    C -->|Analytics Queries| F[Snowflake SQL API]
+    F -->|Cortex Insights| C
+    C -->|Gemini Prompt| G[Gemini API]
+    G -->|Chat Response| A
+  ```
+
   ## Feature Checklist
 
   - Account creation and login (Supabase Auth)

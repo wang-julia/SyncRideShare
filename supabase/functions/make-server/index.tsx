@@ -454,7 +454,23 @@ app.post("/make-server-c63c7d45/ai/ask", async (c) => {
     const airportFilter = airportSafe ? ` AND airport = '${airportSafe}'` : "";
 
     let stats: any = {};
-    if (q.includes("busiest")) {
+    if (q.includes("how long") || q.includes("travel time") || q.includes("eta")) {
+      const timeMatch = q.match(/(\d{1,2})\s*(am|pm)/);
+      const hour = timeMatch
+        ? (Number(timeMatch[1]) % 12) + (timeMatch[2] === "pm" ? 12 : 0)
+        : new Date().getHours();
+      const originFilter = areaSafe ? ` AND origin_area = '${areaSafe}'` : "";
+      const destinationFilter = airportSafe ? ` AND airport = '${airportSafe}'` : "";
+      const statement = `
+        SELECT day_of_week, hour, avg_travel_minutes, p50_travel_minutes, p90_travel_minutes
+        FROM RIDESHARE.ANALYTICS.TRAVEL_TIME
+        WHERE hour = ${hour} ${originFilter} ${destinationFilter}
+        ORDER BY avg_travel_minutes ASC
+        LIMIT 3
+      `;
+      const payload = await snowflakeQuery(statement);
+      stats = rowsToObjects(payload);
+    } else if (q.includes("busiest")) {
       const statement = `
         SELECT day_of_week, hour, SUM(ride_count) AS ride_count
         FROM ${SNOWFLAKE_ANALYTICS_TABLE}
