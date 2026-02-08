@@ -58,7 +58,7 @@
   - Gemini chat widget for general assistance
 
   ## Frameworks/Wireframes
-  - Figma Design: https://www.figma.com/proto/cVK71jm3o7DEKYYXj7YAm4/SynC-Framework?node-id=1-2&t=KaLHHiMNEwsogYon-1 --> link to prototype
+  - Figma Design: [https://www.figma.com/proto/cVK71jm3o7DEKYYXj7YAm4/SynC-Framework?node-id=1-2&t=KaLHHiMNEwsogYon-1](https://www.figma.com/design/cVK71jm3o7DEKYYXj7YAm4/SynC-Framework?node-id=1-2&p=f&t=M9zbbPd9xcJCOD17-0) --> link to prototype
 
   ## Running the code
 
