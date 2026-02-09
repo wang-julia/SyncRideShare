@@ -3,8 +3,8 @@
 
   Sync Ride Share is a student-first carpooling app that matches riders headed to the same airport or station, lets them coordinate in chat, and split fares. Users submit ride details, browse matches, confirm rides, and pay their share via Flowglad. The app also includes Snowflake-powered analytics insights and a Gemini chat helper.
 
-  Original design inspiration: https://www.figma.com/design/iE5GzernAmwrlHSRjswtNZ/Student-Ride-Sharing-App.
-  DevFest 2026 - Best use of Flowglad: https://devpost.com/software/sync-fk05vs
+  - DevFest 2026 - Best use of Flowglad: https://devpost.com/software/sync-fk05vs
+  - Original design inspiration: https://www.figma.com/design/iE5GzernAmwrlHSRjswtNZ/Student-Ride-Sharing-App.
   
 
   ## Tech Stack
